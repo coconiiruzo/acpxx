@@ -1,0 +1,161 @@
+{
+  "schema_version": 1,
+  "catalog_id": "agentmux-official",
+  "sequence": 1,
+  "generated_at": "2026-08-05T00:00:00Z",
+  "expires_at": "2027-08-05T00:00:00Z",
+  "entries": [
+    {
+      "entry_id": "grok/0.2.118/aarch64-apple-darwin/sha256-2de5b960",
+      "provider": "grok",
+      "target": "aarch64-apple-darwin",
+      "driver_id": "grok-native",
+      "driver_revision": 1,
+      "agentmux_requirement": ">=2.0.0, <3.0.0",
+      "protocol": "v1",
+      "identity": {
+        "display_version": "0.2.118",
+        "normalized_version": "0.2.118",
+        "components": {}
+      },
+      "artifacts": [
+        {
+          "subject": "executable",
+          "algorithm": "sha256",
+          "digest": "2de5b9609a03492dd6b9e4cca9637d651fe998bb8371bf9f852e7b28b38c034e"
+        }
+      ],
+      "state": "verified",
+      "not_after": null,
+      "qualification": {
+        "suite_version": 1,
+        "tested_at": "2026-08-05T00:00:00Z",
+        "evidence_digest": "sha256:57c4d05d7b9074e1d09c71a42bb46cebf30ef53a984bd394cdc607697a90bfb1"
+      }
+    },
+    {
+      "entry_id": "cursor/2026.07.20-8cc9c0b/aarch64-apple-darwin/sha256-eed61c52",
+      "provider": "cursor",
+      "target": "aarch64-apple-darwin",
+      "driver_id": "cursor-native",
+      "driver_revision": 1,
+      "agentmux_requirement": ">=2.0.0, <3.0.0",
+      "protocol": "v1",
+      "identity": {
+        "display_version": "2026.07.20-8cc9c0b",
+        "normalized_version": "2026.07.20-8cc9c0b",
+        "components": {}
+      },
+      "artifacts": [
+        {
+          "subject": "executable",
+          "algorithm": "sha256",
+          "digest": "eed61c5224668c9236334c4c68936a16aecc37374b592f59e31eb50433817831"
+        }
+      ],
+      "state": "verified",
+      "not_after": null,
+      "qualification": {
+        "suite_version": 1,
+        "tested_at": "2026-08-05T00:00:00Z",
+        "evidence_digest": "sha256:57c4d05d7b9074e1d09c71a42bb46cebf30ef53a984bd394cdc607697a90bfb1"
+      }
+    },
+    {
+      "entry_id": "codex/1.1.9/aarch64-apple-darwin/sha256-c4fdf929",
+      "provider": "codex",
+      "target": "aarch64-apple-darwin",
+      "driver_id": "codex-acp",
+      "driver_revision": 1,
+      "agentmux_requirement": ">=2.0.0, <3.0.0",
+      "protocol": "v1",
+      "identity": {
+        "display_version": "1.1.9",
+        "normalized_version": "1.1.9",
+        "components": {
+          "codex": "0.145.0"
+        }
+      },
+      "artifacts": [
+        {
+          "subject": "executable",
+          "algorithm": "sha256",
+          "digest": "c4fdf92936979fb1791d77437d75f934ed9c42e47738343620fcbe5c697cf1e6"
+        },
+        {
+          "subject": "package_metadata",
+          "algorithm": "sha256",
+          "digest": "16c3d225bdff709b4ffe78d459d278cc04a8430971d26af76ba5b8c94b62d556"
+        }
+      ],
+      "state": "verified",
+      "not_after": null,
+      "qualification": {
+        "suite_version": 1,
+        "tested_at": "2026-08-05T00:00:00Z",
+        "evidence_digest": "sha256:57c4d05d7b9074e1d09c71a42bb46cebf30ef53a984bd394cdc607697a90bfb1"
+      }
+    },
+    {
+      "entry_id": "claude/0.64.2/aarch64-apple-darwin/sha256-260aac90",
+      "provider": "claude",
+      "target": "aarch64-apple-darwin",
+      "driver_id": "claude-agent-acp",
+      "driver_revision": 1,
+      "agentmux_requirement": ">=2.0.0, <3.0.0",
+      "protocol": "v1",
+      "identity": {
+        "display_version": "0.64.2",
+        "normalized_version": "0.64.2",
+        "components": {
+          "claude_agent_sdk": "0.3.220"
+        }
+      },
+      "artifacts": [
+        {
+          "subject": "executable",
+          "algorithm": "sha256",
+          "digest": "260aac90bf75f197b93640087c1de66441761d43c2784efa035fdcee60b5dacd"
+        },
+        {
+          "subject": "package_metadata",
+          "algorithm": "sha256",
+          "digest": "c664b94685bee5682c1629166086aa68cedf14d9e22f6ce4e3492e8d92757e62"
+        }
+      ],
+      "state": "verified",
+      "not_after": null,
+      "qualification": {
+        "suite_version": 1,
+        "tested_at": "2026-08-05T00:00:00Z",
+        "evidence_digest": "sha256:57c4d05d7b9074e1d09c71a42bb46cebf30ef53a984bd394cdc607697a90bfb1"
+      }
+    }
+  ],
+  "channels": [
+    {
+      "provider": "grok",
+      "target": "aarch64-apple-darwin",
+      "name": "recommended",
+      "entry_id": "grok/0.2.118/aarch64-apple-darwin/sha256-2de5b960"
+    },
+    {
+      "provider": "cursor",
+      "target": "aarch64-apple-darwin",
+      "name": "recommended",
+      "entry_id": "cursor/2026.07.20-8cc9c0b/aarch64-apple-darwin/sha256-eed61c52"
+    },
+    {
+      "provider": "codex",
+      "target": "aarch64-apple-darwin",
+      "name": "recommended",
+      "entry_id": "codex/1.1.9/aarch64-apple-darwin/sha256-c4fdf929"
+    },
+    {
+      "provider": "claude",
+      "target": "aarch64-apple-darwin",
+      "name": "recommended",
+      "entry_id": "claude/0.64.2/aarch64-apple-darwin/sha256-260aac90"
+    }
+  ]
+}

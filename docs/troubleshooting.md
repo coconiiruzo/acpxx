@@ -4,6 +4,7 @@ Start with:
 
 ```bash
 agentmux doctor --json
+agentmux compatibility status --json
 agentmux list
 ```
 
@@ -11,8 +12,16 @@ Common failures:
 
 - `adapter_not_found` or `provider_spawn_failed`: configure an absolute path and
   confirm it is executable.
-- version mismatch: install the exact compatibility-manifest version; agentmux
-  deliberately does not auto-update or fall back.
+- `provider_not_verified`: run `agentmux provider verify PROFILE --json`; the
+  identity and artifact set must match a signed Catalog entry. A matching
+  version string is insufficient.
+- `provider_blocked`: install a recommended qualified artifact. Experimental
+  policy cannot override a blocked entry.
+- Catalog signature/expiry/rollback failure: retain the active generation,
+  verify system time/cache permissions, then rerun the explicit update. Never
+  overwrite `state.json` with an older sequence.
+- config migration required: run `agentmux config migrate --check`, resolve
+  unknown local artifact diagnostics, then run `--write`.
 - `authentication_failed`: complete the provider's own login flow or supply its
   documented credential environment before starting the broker.
 - `stale_parent`: use the Agent's latest terminal Run ID from `agentmux list`.
@@ -31,5 +40,5 @@ Common failures:
 Provider stderr is drained with a bounded tail by the pinned ACP SDK. ACP stdout
 must contain protocol frames only. For a repeatable report, include agentmux and
 provider versions, the redacted `doctor --json` output, failure code/stage, and
-the compatibility manifest. Never attach credentials, prompt/output bodies, or
+the Catalog digest/sequence. Never attach credentials, prompt/output bodies, or
 raw environment dumps.

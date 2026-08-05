@@ -1,0 +1,90 @@
+name: Provider qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      provider:
+        type: choice
+        required: true
+        options: [grok, cursor, codex, claude]
+      profile:
+        type: string
+        required: true
+      review_reference:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  qualify:
+    runs-on: [self-hosted, macOS, ARM64, agentmux-provider-qualification]
+    environment: provider-qualification
+    steps:
+      - uses: actions/checkout@v5
+      - name: Record qualification start
+        run: echo "QUALIFICATION_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@1.96.0
+        with:
+          components: clippy,rustfmt
+      - name: Build exact candidate broker
+        run: cargo build --locked --release
+      - name: Verify installed artifact without spawning
+        env:
+          PROFILE: ${{ inputs.profile }}
+        run: target/release/agentmux provider verify "$PROFILE" --json > provider-verification.json
+      - name: Run authenticated conformance and process suites
+        env:
+          AGENTMUX_REAL_PROVIDER: ${{ inputs.provider }}
+        run: |
+          case "$AGENTMUX_REAL_PROVIDER" in
+            grok)
+              conformance=grok_authenticated_conformance
+              process=grok_real_process_tree_is_reaped_after_broker_death
+              permission=
+              ;;
+            cursor)
+              conformance=cursor_authenticated_conformance
+              process=cursor_real_process_tree_is_reaped_after_broker_death
+              permission=
+              ;;
+            codex)
+              conformance=codex_authenticated_conformance
+              process=codex_real_process_tree_is_reaped_after_broker_death
+              permission=codex_real_approval_allow_and_deny
+              ;;
+            claude)
+              conformance=claude_authenticated_conformance
+              process=claude_real_process_tree_is_reaped_after_broker_death
+              permission=claude_real_permission_allow_and_deny
+              ;;
+            *) exit 2 ;;
+          esac
+          cargo test --locked --test provider_conformance "$conformance" -- --ignored --nocapture
+          cargo test --locked --test provider_process_audit "$process" -- --ignored --nocapture
+          if [ -n "$permission" ]; then
+            cargo test --locked --test provider_permission_audit "$permission" -- --ignored --nocapture
+          fi
+          cargo test --locked --test provider_capability_audit -- --ignored --nocapture
+      - name: Record evidence
+        env:
+          AGENTMUX_BINARY: target/release/agentmux
+          PROFILE: ${{ inputs.profile }}
+          PROVIDER: ${{ inputs.provider }}
+          REVIEW_REFERENCE: ${{ inputs.review_reference }}
+        run: |
+          scripts/record-provider-qualification.py \
+            --provider "$PROVIDER" \
+            --profile "$PROFILE" \
+            --result provider-verification.json \
+            --review-reference "$REVIEW_REFERENCE" \
+            --started-at "$QUALIFICATION_STARTED_AT" \
+            --output qualification-evidence.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qualification-${{ inputs.provider }}-${{ github.sha }}
+          path: |
+            qualification-evidence.json
+            provider-verification.json
+          if-no-files-found: error

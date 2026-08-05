@@ -21,7 +21,7 @@ struct Cli {
     /// Broker Unix Domain Socket.
     #[arg(long, global = true)]
     socket: Option<PathBuf>,
-    /// Pinned, non-secret provider profile configuration.
+    /// Schema-v2, non-secret provider profile configuration.
     #[arg(long, global = true)]
     config: Option<PathBuf>,
     #[command(subcommand)]
@@ -58,6 +58,9 @@ enum Command {
         /// Interrupt this Run after the execution deadline.
         #[arg(long)]
         deadline_ms: Option<u64>,
+        /// Permit mutation-capable permissions for an experimental provider lock.
+        #[arg(long)]
+        allow_unverified_mutations: bool,
         #[arg(required = true, trailing_var_arg = true)]
         task: Vec<String>,
     },
@@ -117,6 +120,21 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Inspect or explicitly update the signed Compatibility Catalog.
+    Compatibility {
+        #[command(subcommand)]
+        command: CompatibilityCommand,
+    },
+    /// Inspect installed provider identities without starting an ACP session.
+    Provider {
+        #[command(subcommand)]
+        command: ProviderCommand,
+    },
+    /// Migrate provider configuration between explicit schema versions.
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
     /// Measure Phase 17 broker overhead independently from provider/model time.
     Benchmark {
         #[arg(long, default_value_t = 100)]
@@ -148,6 +166,47 @@ enum Command {
         allow_env: Vec<String>,
         #[arg(last = true, required = true)]
         command: Vec<OsString>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum CompatibilityCommand {
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    Update {
+        #[arg(long, requires = "signature")]
+        file: Option<PathBuf>,
+        #[arg(long, requires = "file")]
+        signature: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ProviderCommand {
+    Status {
+        #[arg(long)]
+        profile: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    Verify {
+        profile: String,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ConfigCommand {
+    Migrate {
+        #[arg(long, conflicts_with = "write", required_unless_present = "write")]
+        check: bool,
+        #[arg(long, conflicts_with = "check", required_unless_present = "check")]
+        write: bool,
     },
 }
 
@@ -200,6 +259,7 @@ async fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             database,
         } => {
             let server = LocalServer::bind(&socket)?;
+            let catalog_store = catalog_store_for_runtime(&config)?;
             let shutdown = async {
                 #[cfg(unix)]
                 {
@@ -213,9 +273,10 @@ async fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                 }
             };
             let database = database.unwrap_or_else(acpxx::doctor::default_database_path);
-            let broker = Broker::with_sqlite_options(
+            let broker = Broker::with_sqlite_options_and_catalog_store(
                 max_concurrency,
                 database,
+                catalog_store,
                 Duration::from_secs(idle_ttl_secs),
                 provider_limits,
             )
@@ -237,6 +298,9 @@ async fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                     cwd,
                     task: task_with_deadline(task.join(" "), deadline_ms),
                     permission_policy: permission_policy(permissions),
+                    version_policy: acpxx::VersionPolicy::Verified,
+                    catalog_entry: None,
+                    allow_unverified_mutations: false,
                 })
                 .await?;
             let receipt = broker
@@ -264,6 +328,11 @@ async fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             }
             Ok(exit_for(report.healthy))
         }
+        Command::Compatibility { command } => {
+            run_compatibility_command(&socket, &config, command).await
+        }
+        Command::Provider { command } => run_provider_command(&config, command).await,
+        Command::Config { command } => run_config_command(&config, command),
         Command::Benchmark {
             samples,
             events,
@@ -323,15 +392,26 @@ async fn run_client_command(
             executable,
             permissions,
             deadline_ms,
+            allow_unverified_mutations,
             task,
         } => {
-            let (provider, profile_permissions) = match profile {
+            let (provider, profile_permissions, version_policy, catalog_entry) = match profile {
                 Some(profile) => {
                     let profile =
                         acpxx::config::ProviderConfig::load(config_path)?.resolve(&profile)?;
-                    (profile.provider_spec, profile.permission_policy)
+                    (
+                        profile.provider_spec,
+                        profile.permission_policy,
+                        profile.version_policy,
+                        profile.catalog_entry,
+                    )
                 }
-                None => (provider_spec(provider, executable), PermissionPolicy::Deny),
+                None => (
+                    provider_spec(provider, executable),
+                    PermissionPolicy::Deny,
+                    acpxx::VersionPolicy::Verified,
+                    None,
+                ),
             };
             let response = client
                 .request(IpcCommand::Spawn(SpawnRequest {
@@ -341,6 +421,9 @@ async fn run_client_command(
                     permission_policy: permissions
                         .map(permission_policy)
                         .unwrap_or(profile_permissions),
+                    version_policy,
+                    catalog_entry,
+                    allow_unverified_mutations,
                 }))
                 .await?;
             print_response(response)
@@ -442,6 +525,9 @@ async fn run_client_command(
         Command::Serve { .. }
         | Command::Run { .. }
         | Command::Doctor { .. }
+        | Command::Compatibility { .. }
+        | Command::Provider { .. }
+        | Command::Config { .. }
         | Command::Benchmark { .. }
         | Command::Supervise { .. } => {
             unreachable!("local-only commands are handled before IPC dispatch")
@@ -543,5 +629,302 @@ fn task_with_deadline(content: String, deadline_ms: Option<u64>) -> Task {
     match deadline_ms {
         Some(milliseconds) => Task::new(content).with_deadline(Duration::from_millis(milliseconds)),
         None => Task::new(content),
+    }
+}
+
+fn catalog_store_for_runtime(
+    config_path: &std::path::Path,
+) -> Result<acpxx::CatalogStore, Box<dyn std::error::Error>> {
+    let bootstrap = acpxx::bootstrap_catalog()?;
+    let keyring = acpxx::official_keyring()?;
+    if config_path.exists() {
+        let config = acpxx::config::ProviderConfig::load(config_path)?;
+        if config.catalog.source == acpxx::config::CatalogSourceConfig::File {
+            return Ok(acpxx::CatalogStore::open_file(
+                config.catalog.path.expect("validated file Catalog path"),
+                config
+                    .catalog
+                    .signature_path
+                    .expect("validated file Catalog signature path"),
+                bootstrap,
+                keyring,
+            )?);
+        }
+    }
+    Ok(acpxx::CatalogStore::open(
+        acpxx::default_catalog_cache_path(),
+        bootstrap,
+        keyring,
+    )?)
+}
+
+async fn run_compatibility_command(
+    socket: &std::path::Path,
+    config_path: &std::path::Path,
+    command: CompatibilityCommand,
+) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    match command {
+        CompatibilityCommand::Status { json } => {
+            let status = match IpcClient::new(socket.to_path_buf())
+                .request(IpcCommand::CompatibilityStatus)
+                .await
+            {
+                Ok(IpcResponse::CompatibilityStatus(status)) => status,
+                Ok(IpcResponse::Error(error)) => {
+                    return Err(format!("{}: {}", error.code, error.message).into());
+                }
+                Ok(response) => {
+                    return Err(format!("unexpected broker response: {response:?}").into());
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                    ) =>
+                {
+                    catalog_store_for_runtime(config_path)?.status()
+                }
+                Err(error) => return Err(error.into()),
+            };
+            if json {
+                print_json(&status)?;
+            } else {
+                print_catalog_status(&status);
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        CompatibilityCommand::Update {
+            file,
+            signature,
+            json,
+        } => {
+            let (catalog, signature) = match (file, signature) {
+                (Some(file), Some(signature)) => (std::fs::read(file)?, std::fs::read(signature)?),
+                (None, None) => download_official_catalog().await?,
+                _ => unreachable!("clap requires file and signature together"),
+            };
+            if catalog.len() > 4 * 1024 * 1024 || signature.len() > 64 * 1024 {
+                return Err("Catalog update exceeds the bounded download size".into());
+            }
+            let store = acpxx::CatalogStore::open(
+                acpxx::default_catalog_cache_path(),
+                acpxx::bootstrap_catalog()?,
+                acpxx::official_keyring()?,
+            )?;
+            let status = {
+                store.install_verified(&catalog, &signature)?;
+                store.status()
+            };
+            match IpcClient::new(socket.to_path_buf())
+                .request(IpcCommand::ReloadCompatibility)
+                .await
+            {
+                Ok(IpcResponse::CompatibilityStatus(_)) => {}
+                Ok(IpcResponse::Error(error)) => {
+                    return Err(format!(
+                        "Catalog installed but daemon reload failed: {}: {}",
+                        error.code, error.message
+                    )
+                    .into());
+                }
+                Ok(response) => {
+                    return Err(
+                        format!("Catalog installed but daemon returned {response:?}").into(),
+                    );
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused
+                    ) => {}
+                Err(error) => return Err(error.into()),
+            }
+            if json {
+                print_json(&status)?;
+            } else {
+                print_catalog_status(&status);
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+    }
+}
+
+async fn download_official_catalog() -> Result<(Vec<u8>, Vec<u8>), Box<dyn std::error::Error>> {
+    const BASE: &str =
+        "https://github.com/coconiiruzo/acpxx/releases/latest/download/provider-catalog-v1";
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()?;
+    let catalog = bounded_download(&client, &format!("{BASE}.json"), 4 * 1024 * 1024).await?;
+    let signature = bounded_download(&client, &format!("{BASE}.sig"), 64 * 1024).await?;
+    Ok((catalog, signature))
+}
+
+async fn bounded_download(
+    client: &reqwest::Client,
+    url: &str,
+    maximum: usize,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let response = client.get(url).send().await?.error_for_status()?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > maximum as u64)
+    {
+        return Err(format!("download from {url} exceeds {maximum} bytes").into());
+    }
+    use futures::StreamExt as _;
+    let mut stream = response.bytes_stream();
+    let mut bytes = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        if bytes.len().saturating_add(chunk.len()) > maximum {
+            return Err(format!("download from {url} exceeds {maximum} bytes").into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
+fn print_catalog_status(status: &acpxx::CatalogStatus) {
+    println!("source\t{:?}", status.source);
+    println!("catalog\t{}", status.catalog_id);
+    println!("sequence\t{}", status.sequence);
+    println!("digest\t{}", status.digest);
+    println!("expires_at\t{}", status.expires_at);
+    for entry in &status.recommended {
+        println!(
+            "recommended\t{}\t{}\t{}\t{}",
+            entry.provider, entry.target, entry.channel, entry.display_version
+        );
+    }
+}
+
+#[derive(serde::Serialize)]
+struct ProviderVerificationReport {
+    profile: String,
+    provider: ProviderId,
+    executable: String,
+    identity: acpxx::ProviderIdentity,
+    artifacts: Vec<acpxx::ArtifactDigest>,
+    selected: acpxx::ResolvedProviderLock,
+}
+
+async fn verify_profile(
+    config: &acpxx::config::ProviderConfig,
+    catalog: &acpxx::VerifiedCatalog,
+    profile_name: &str,
+) -> Result<ProviderVerificationReport, Box<dyn std::error::Error>> {
+    let profile = config.resolve(profile_name)?;
+    let driver = profile.provider_spec.driver()?;
+    let observed = acpxx::acp::observe_provider(&driver)
+        .await
+        .map_err(|failure| failure.message)?;
+    let target = acpxx::host_target();
+    let agentmux_version = semver::Version::parse(env!("CARGO_PKG_VERSION"))?;
+    let selected = acpxx::resolve_provider(
+        catalog,
+        &acpxx::ResolutionRequest {
+            driver: &driver,
+            observed: &observed,
+            target,
+            policy: profile.version_policy,
+            exact_entry: profile.catalog_entry.as_deref(),
+            agentmux_version: &agentmux_version,
+            now: time::OffsetDateTime::now_utc(),
+        },
+    )?;
+    Ok(ProviderVerificationReport {
+        profile: profile_name.to_owned(),
+        provider: profile.provider,
+        executable: observed.executable.display().to_string(),
+        identity: observed.identity,
+        artifacts: observed.artifacts,
+        selected,
+    })
+}
+
+async fn run_provider_command(
+    config_path: &std::path::Path,
+    command: ProviderCommand,
+) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    let config = acpxx::config::ProviderConfig::load(config_path)?;
+    let store = catalog_store_for_runtime(config_path)?;
+    let catalog = store.snapshot().catalog;
+    match command {
+        ProviderCommand::Verify { profile, json } => {
+            let report = verify_profile(&config, &catalog, &profile).await?;
+            if json {
+                print_json(&report)?;
+            } else {
+                println!(
+                    "{}\t{}\t{}\t{:?}",
+                    report.profile,
+                    report.provider,
+                    report.identity.display_version,
+                    report.selected.compatibility
+                );
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        ProviderCommand::Status { profile, json } => {
+            let names: Vec<_> = match profile {
+                Some(profile) => vec![profile],
+                None => config.profiles.keys().cloned().collect(),
+            };
+            let mut reports = Vec::new();
+            for name in names {
+                reports.push(verify_profile(&config, &catalog, &name).await?);
+            }
+            if json {
+                print_json(&reports)?;
+            } else {
+                for report in reports {
+                    println!(
+                        "{}\t{}\t{}\t{:?}",
+                        report.profile,
+                        report.provider,
+                        report.identity.display_version,
+                        report.selected.compatibility
+                    );
+                }
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+    }
+}
+
+fn run_config_command(
+    config_path: &std::path::Path,
+    command: ConfigCommand,
+) -> Result<ExitCode, Box<dyn std::error::Error>> {
+    match command {
+        ConfigCommand::Migrate { check, write } => {
+            let catalog = acpxx::CatalogStore::open(
+                acpxx::default_catalog_cache_path(),
+                acpxx::bootstrap_catalog()?,
+                acpxx::official_keyring()?,
+            )?
+            .snapshot()
+            .catalog;
+            if check {
+                let migration = acpxx::config::check_migration(config_path, &catalog.catalog)?;
+                print_json(&serde_json::json!({
+                    "ready": migration.is_ready(),
+                    "warnings": migration.warnings,
+                    "blocking_issues": migration.blocking_issues,
+                    "rendered": migration.rendered,
+                }))?;
+                return Ok(exit_for(migration.is_ready()));
+            }
+            if write {
+                let backup = acpxx::config::write_migration(config_path, &catalog.catalog)?;
+                print_json(&serde_json::json!({
+                    "migrated": config_path,
+                    "backup": backup,
+                }))?;
+                return Ok(ExitCode::SUCCESS);
+            }
+            unreachable!("clap requires --check or --write")
+        }
     }
 }

@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "suite_version": 1,
+  "tested_at": "2026-08-05T00:00:00Z",
+  "target": "aarch64-apple-darwin",
+  "agentmux_release": "1.0.0",
+  "agentmux_commit": "daa362618dce49e4142367dc2e39846e42027086",
+  "review_reference": "https://github.com/coconiiruzo/acpxx/releases/tag/v1.0.0",
+  "providers": [
+    {
+      "provider": "grok",
+      "driver_id": "grok-native",
+      "driver_revision": 1,
+      "identity": "0.2.118",
+      "artifact_sha256": "2de5b9609a03492dd6b9e4cca9637d651fe998bb8371bf9f852e7b28b38c034e",
+      "initialize": true,
+      "authentication": true,
+      "session_new": true,
+      "streaming": true,
+      "three_turn_continuity": true,
+      "cancel_recovery": true,
+      "permission_audit": true,
+      "process_tree_audit": true,
+      "capability_inventory": true
+    },
+    {
+      "provider": "cursor",
+      "driver_id": "cursor-native",
+      "driver_revision": 1,
+      "identity": "2026.07.20-8cc9c0b",
+      "artifact_sha256": "eed61c5224668c9236334c4c68936a16aecc37374b592f59e31eb50433817831",
+      "initialize": true,
+      "authentication": true,
+      "session_new": true,
+      "streaming": true,
+      "three_turn_continuity": true,
+      "cancel_recovery": true,
+      "permission_audit": true,
+      "process_tree_audit": true,
+      "capability_inventory": true
+    },
+    {
+      "provider": "codex",
+      "driver_id": "codex-acp",
+      "driver_revision": 1,
+      "identity": "1.1.9",
+      "components": {
+        "codex": "0.145.0"
+      },
+      "artifact_sha256": "c4fdf92936979fb1791d77437d75f934ed9c42e47738343620fcbe5c697cf1e6",
+      "package_metadata_sha256": "16c3d225bdff709b4ffe78d459d278cc04a8430971d26af76ba5b8c94b62d556",
+      "initialize": true,
+      "authentication": true,
+      "session_new": true,
+      "streaming": true,
+      "three_turn_continuity": true,
+      "cancel_recovery": true,
+      "permission_audit": true,
+      "process_tree_audit": true,
+      "capability_inventory": true
+    },
+    {
+      "provider": "claude",
+      "driver_id": "claude-agent-acp",
+      "driver_revision": 1,
+      "identity": "0.64.2",
+      "components": {
+        "claude_agent_sdk": "0.3.220"
+      },
+      "artifact_sha256": "260aac90bf75f197b93640087c1de66441761d43c2784efa035fdcee60b5dacd",
+      "package_metadata_sha256": "c664b94685bee5682c1629166086aa68cedf14d9e22f6ce4e3492e8d92757e62",
+      "initialize": true,
+      "authentication": true,
+      "session_new": true,
+      "streaming": true,
+      "three_turn_continuity": true,
+      "cancel_recovery": true,
+      "permission_audit": true,
+      "process_tree_audit": true,
+      "capability_inventory": true
+    }
+  ]
+}

@@ -14,7 +14,7 @@ use crate::{
     StopReason, TerminalRunState,
 };
 
-const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 #[derive(Clone)]
 pub struct MetadataStore {
@@ -57,13 +57,21 @@ impl MetadataStore {
 
     pub fn save_agent(&self, snapshot: &AgentSnapshot) -> crate::Result<()> {
         let json = serde_json::to_string(&redacted_agent(snapshot.clone())).map_err(internal)?;
+        let provider_lock = snapshot
+            .provider_lock
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(internal)?;
         self.connection
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .execute(
-                "INSERT INTO agents(agent_id, snapshot_json) VALUES(?1, ?2)
-                 ON CONFLICT(agent_id) DO UPDATE SET snapshot_json=excluded.snapshot_json",
-                params![snapshot.agent_id.to_string(), json],
+                "INSERT INTO agents(agent_id, snapshot_json, provider_lock_json) VALUES(?1, ?2, ?3)
+                 ON CONFLICT(agent_id) DO UPDATE SET
+                   snapshot_json=excluded.snapshot_json,
+                   provider_lock_json=excluded.provider_lock_json",
+                params![snapshot.agent_id.to_string(), json, provider_lock],
             )
             .map_err(internal)?;
         Ok(())
@@ -71,16 +79,26 @@ impl MetadataStore {
 
     pub fn save_run_snapshot(&self, snapshot: &RunSnapshot) -> crate::Result<()> {
         let json = serde_json::to_string(&redacted_snapshot(snapshot.clone())).map_err(internal)?;
+        let provider_lock = snapshot
+            .provider_lock
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(internal)?;
         self.connection
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .execute(
-                "INSERT INTO runs(run_id, agent_id, snapshot_json) VALUES(?1, ?2, ?3)
-                 ON CONFLICT(run_id) DO UPDATE SET snapshot_json=excluded.snapshot_json",
+                "INSERT INTO runs(run_id, agent_id, snapshot_json, provider_lock_json)
+                 VALUES(?1, ?2, ?3, ?4)
+                 ON CONFLICT(run_id) DO UPDATE SET
+                   snapshot_json=excluded.snapshot_json,
+                   provider_lock_json=excluded.provider_lock_json",
                 params![
                     snapshot.run_id.to_string(),
                     snapshot.agent_id.to_string(),
-                    json
+                    json,
+                    provider_lock
                 ],
             )
             .map_err(internal)?;
@@ -126,6 +144,7 @@ impl MetadataStore {
                 parent_run_id: snapshot.parent_run_id,
                 session_stamp: None,
                 provider: providers[&snapshot.agent_id],
+                provider_lock: snapshot.provider_lock.as_ref().map(|lock| lock.summary()),
                 state: TerminalRunState::Failed,
                 queued_at: snapshot.queued_at,
                 started_at: snapshot.started_at.unwrap_or(snapshot.queued_at),
@@ -220,7 +239,7 @@ fn initialize_schema(connection: &mut Connection) -> crate::Result<()> {
     match version {
         None => {
             let transaction = connection.transaction().map_err(internal)?;
-            create_v1_tables(&transaction)?;
+            create_v2_tables(&transaction)?;
             transaction
                 .execute(
                     "INSERT INTO schema_metadata(key, value) VALUES('schema_version', ?1)",
@@ -229,15 +248,16 @@ fn initialize_schema(connection: &mut Connection) -> crate::Result<()> {
                 .map_err(internal)?;
             transaction.commit().map_err(internal)
         }
-        Some(0) => migrate_v0_to_v1(connection),
-        Some(SCHEMA_VERSION) => create_v1_tables(connection),
+        Some(0) => migrate_v0_to_v2(connection),
+        Some(1) => migrate_v1_to_v2(connection),
+        Some(SCHEMA_VERSION) => create_v2_tables(connection),
         Some(version) => Err(internal(format!(
             "unsupported schema version {version}; expected {SCHEMA_VERSION}"
         ))),
     }
 }
 
-fn migrate_v0_to_v1(connection: &mut Connection) -> crate::Result<()> {
+fn migrate_v0_to_v2(connection: &mut Connection) -> crate::Result<()> {
     let transaction = connection.transaction().map_err(internal)?;
     transaction
         .execute_batch(
@@ -261,13 +281,49 @@ fn migrate_v0_to_v1(connection: &mut Connection) -> crate::Result<()> {
             )
             .map_err(internal)?;
     }
-    transaction
-        .execute(
-            "UPDATE schema_metadata SET value=?1 WHERE key='schema_version'",
-            [SCHEMA_VERSION],
+    add_v2_columns(&transaction)?;
+    set_schema_version(&transaction, SCHEMA_VERSION)?;
+    transaction.commit().map_err(internal)
+}
+
+fn migrate_v1_to_v2(connection: &mut Connection) -> crate::Result<()> {
+    let transaction = connection.transaction().map_err(internal)?;
+    create_v1_tables(&transaction)?;
+    add_v2_columns(&transaction)?;
+    set_schema_version(&transaction, SCHEMA_VERSION)?;
+    transaction.commit().map_err(internal)
+}
+
+fn create_v2_tables(connection: &Connection) -> crate::Result<()> {
+    connection
+        .execute_batch(
+            "CREATE TABLE IF NOT EXISTS agents (
+               agent_id TEXT PRIMARY KEY,
+               snapshot_json TEXT NOT NULL,
+               provider_lock_json TEXT
+             );
+             CREATE TABLE IF NOT EXISTS runs (
+               run_id TEXT PRIMARY KEY,
+               agent_id TEXT NOT NULL,
+               snapshot_json TEXT NOT NULL,
+               receipt_json TEXT,
+               completion_sequence INTEGER NOT NULL DEFAULT 0,
+               provider_lock_json TEXT
+             );",
         )
         .map_err(internal)?;
-    transaction.commit().map_err(internal)
+    for (table, column) in [
+        ("runs", "completion_sequence"),
+        ("runs", "provider_lock_json"),
+        ("agents", "provider_lock_json"),
+    ] {
+        if !has_column(connection, table, column)? {
+            return Err(internal(format!(
+                "schema version 2 is missing {table}.{column}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn create_v1_tables(connection: &Connection) -> crate::Result<()> {
@@ -285,12 +341,30 @@ fn create_v1_tables(connection: &Connection) -> crate::Result<()> {
                completion_sequence INTEGER NOT NULL DEFAULT 0
              );",
         )
-        .map_err(internal)?;
-    if !has_column(connection, "runs", "completion_sequence")? {
-        return Err(internal(
-            "schema version 1 is missing runs.completion_sequence",
-        ));
+        .map_err(internal)
+}
+
+fn add_v2_columns(connection: &Connection) -> crate::Result<()> {
+    if !has_column(connection, "agents", "provider_lock_json")? {
+        connection
+            .execute("ALTER TABLE agents ADD COLUMN provider_lock_json TEXT", [])
+            .map_err(internal)?;
     }
+    if !has_column(connection, "runs", "provider_lock_json")? {
+        connection
+            .execute("ALTER TABLE runs ADD COLUMN provider_lock_json TEXT", [])
+            .map_err(internal)?;
+    }
+    Ok(())
+}
+
+fn set_schema_version(connection: &Connection, version: i64) -> crate::Result<()> {
+    connection
+        .execute(
+            "UPDATE schema_metadata SET value=?1 WHERE key='schema_version'",
+            [version],
+        )
+        .map_err(internal)?;
     Ok(())
 }
 

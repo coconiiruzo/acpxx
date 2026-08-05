@@ -17,6 +17,7 @@ async fn mailbox_and_three_followups_preserve_the_session_stamp() {
         .await
         .unwrap();
     let initial_stamp = current_stamp(&broker, spawned.agent.agent_id).await;
+    let initial_lock = first.provider_lock.clone();
 
     let first_message = broker
         .send(
@@ -51,6 +52,7 @@ async fn mailbox_and_three_followups_preserve_the_session_stamp() {
         let receipt = broker.wait_run(run, WaitOptions::default()).await.unwrap();
         assert_eq!(receipt.state, TerminalRunState::Succeeded);
         assert_eq!(receipt.parent_run_id, Some(parent));
+        assert_eq!(receipt.provider_lock, initial_lock);
         assert_eq!(
             current_stamp(&broker, spawned.agent.agent_id).await,
             initial_stamp

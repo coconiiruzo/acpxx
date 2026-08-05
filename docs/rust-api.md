@@ -13,6 +13,9 @@ let spawned = broker.spawn(SpawnRequest {
     cwd: std::env::current_dir().unwrap(),
     task: Task::new("Summarize the repository"),
     permission_policy: acpxx::PermissionPolicy::Deny,
+    version_policy: acpxx::VersionPolicy::Verified,
+    catalog_entry: None,
+    allow_unverified_mutations: false,
 }).await?;
 let receipt = broker.wait_run(spawned.run, WaitOptions::default()).await?;
 assert!(receipt.state.is_terminal());
@@ -29,3 +32,9 @@ paths, cwd, provider names, and session IDs are never accepted as identity.
 The public contract is frozen in [`PRODUCT_CONTRACT.md`](../PRODUCT_CONTRACT.md).
 The local daemon uses the same serializable request and response types over a
 versioned, bounded UDS protocol; it is not an HTTP API.
+
+Provider compatibility types—`ProviderDriver`, `ProviderIdentity`,
+`ArtifactDigest`, `VersionPolicy`, `ResolvedProviderLock`, `CatalogStatus`, and
+`ProviderLockSummary`—are public. Drivers observe; the signed Catalog and
+resolver authorize. `AgentSnapshot.provider_lock` contains the immutable full
+lock while terminal receipts retain its redacted audit summary.

@@ -14,7 +14,7 @@ use agent_client_protocol::{Agent, Client, ConnectionTo};
 use crate::acp::{FileSystemHost, TerminalHost};
 use crate::process::ProcessTreeOwner;
 use crate::{
-    FailureCode, OutputReceipt, PermissionPolicy, ProviderManifest, RunEventKind, RunFailure,
+    FailureCode, OutputReceipt, PermissionPolicy, ProviderDriver, RunEventKind, RunFailure,
     RunStage, StopReason,
 };
 
@@ -72,7 +72,7 @@ impl OutputAccumulator {
 }
 
 pub async fn run_one_shot(
-    manifest: ProviderManifest,
+    manifest: ProviderDriver,
     cwd: std::path::PathBuf,
     task: String,
     permission_policy: PermissionPolicy,

@@ -9,6 +9,7 @@ use support::mock_request;
 async fn wait_any_returns_first_completion_without_cancelling_others() {
     let broker = Broker::new(2);
     let slow = broker.spawn(mock_request("normal", 0.2)).await.unwrap();
+    wait_for_stage(&broker, slow.run, acpxx::RunStage::Prompting).await;
     let fast = broker.spawn(mock_request("normal", 0.02)).await.unwrap();
     let mut runs = NonEmpty::new(slow.run);
     runs.tail.push(fast.run);
@@ -28,6 +29,7 @@ async fn wait_any_returns_first_completion_without_cancelling_others() {
 async fn wait_all_preserves_input_order() {
     let broker = Broker::new(2);
     let slow = broker.spawn(mock_request("normal", 0.15)).await.unwrap();
+    wait_for_stage(&broker, slow.run, acpxx::RunStage::Prompting).await;
     let fast = broker.spawn(mock_request("normal", 0.01)).await.unwrap();
     let mut runs = NonEmpty::new(slow.run);
     runs.tail.push(fast.run);

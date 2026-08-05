@@ -1,13 +1,19 @@
+mod claude;
+mod codex;
+mod cursor;
 mod grok;
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use semver::VersionReq;
 use serde::{Deserialize, Serialize};
 
-use crate::{PermissionPolicy, ProviderId, Task};
+use crate::{AdmissionError, PermissionPolicy, ProviderId, Task};
 
+pub use claude::{CLAUDE_ACP_TESTED_VERSION, CLAUDE_AGENT_SDK_TESTED_VERSION, claude_manifest};
+pub use codex::{CODEX_ACP_TESTED_VERSION, CODEX_BUNDLED_TESTED_VERSION, codex_manifest};
+pub use cursor::{CURSOR_TESTED_VERSION, cursor_manifest};
 pub use grok::{GROK_TESTED_VERSION, grok_manifest};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -20,15 +26,39 @@ pub enum AcpVersionPolicy {
 pub struct CapabilitySet(pub Vec<String>);
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum VersionProbe {
+    Semver {
+        args: Vec<String>,
+        requirement: semver::VersionReq,
+    },
+    ExactOutput {
+        args: Vec<String>,
+        expected: String,
+    },
+}
+
+impl VersionProbe {
+    #[must_use]
+    pub fn expected(&self) -> String {
+        match self {
+            Self::Semver { requirement, .. } => requirement.to_string(),
+            Self::ExactOutput { expected, .. } => expected.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ProviderManifest {
     pub id: ProviderId,
     pub command: PathBuf,
     pub args: Vec<String>,
-    pub version_args: Vec<String>,
-    pub expected_version: VersionReq,
+    pub version_probe: VersionProbe,
     pub protocol: AcpVersionPolicy,
     pub required_capabilities: CapabilitySet,
     pub allowed_env: Vec<String>,
+    pub fixed_env: BTreeMap<String, String>,
+    pub preferred_auth_method: Option<String>,
     pub startup_timeout: Duration,
 }
 
@@ -39,8 +69,17 @@ pub enum ProviderSpec {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         executable: Option<PathBuf>,
     },
-    Custom {
-        manifest: ProviderManifest,
+    Cursor {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        executable: Option<PathBuf>,
+    },
+    Codex {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        adapter: Option<PathBuf>,
+    },
+    Claude {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        adapter: Option<PathBuf>,
     },
 }
 
@@ -50,18 +89,22 @@ impl ProviderSpec {
         Self::Grok { executable: None }
     }
 
-    pub fn manifest(&self) -> ProviderManifest {
+    pub fn manifest(&self) -> std::result::Result<ProviderManifest, AdmissionError> {
         match self {
-            Self::Grok { executable } => grok_manifest(executable.clone()),
-            Self::Custom { manifest } => manifest.clone(),
+            Self::Grok { executable } => Ok(grok_manifest(executable.clone())),
+            Self::Cursor { executable } => Ok(cursor_manifest(executable.clone())),
+            Self::Codex { adapter } => Ok(codex_manifest(adapter.clone())),
+            Self::Claude { adapter } => Ok(claude_manifest(adapter.clone())),
         }
     }
 
     #[must_use]
     pub fn id(&self) -> ProviderId {
         match self {
-            Self::Grok { .. } => ProviderId::new("grok"),
-            Self::Custom { manifest } => manifest.id.clone(),
+            Self::Grok { .. } => ProviderId::Grok,
+            Self::Cursor { .. } => ProviderId::Cursor,
+            Self::Codex { .. } => ProviderId::Codex,
+            Self::Claude { .. } => ProviderId::Claude,
         }
     }
 }
@@ -85,7 +128,7 @@ pub struct ListQuery {
 pub struct ProviderSnapshot {
     pub id: ProviderId,
     pub protocol: AcpVersionPolicy,
-    pub expected_version: VersionReq,
+    pub expected_version: String,
     pub required_capabilities: CapabilitySet,
 }
 

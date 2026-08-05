@@ -1,0 +1,18 @@
+class Agentmux < Formula
+  desc "Handle-first local broker for coding agents over ACP"
+  homepage "https://github.com/coconiiruzo/acpxx"
+  version "@VERSION@"
+  url "https://github.com/coconiiruzo/acpxx/releases/download/v@VERSION@/agentmux-@VERSION@-aarch64-apple-darwin.tar.gz"
+  sha256 "@SHA256@"
+  license "Apache-2.0"
+
+  depends_on arch: :arm64
+
+  def install
+    bin.install "agentmux"
+  end
+
+  test do
+    assert_match version.to_s, shell_output("#{bin}/agentmux --version")
+  end
+end

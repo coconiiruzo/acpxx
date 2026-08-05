@@ -1,14 +1,10 @@
 use std::collections::BTreeMap;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
-use crate::{
-    ArtifactDigest, CatalogEntry, CompatibilityCatalog, DigestAlgorithm, PermissionPolicy,
-    ProviderId, ProviderIdentity, ProviderSpec, VersionPolicy,
-};
+use crate::{PermissionPolicy, ProviderAssertions, ProviderId, ProviderSpec};
 
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 pub const CONFIG_SCHEMA_VERSION: u32 = 2;
@@ -17,25 +13,7 @@ pub const CONFIG_SCHEMA_VERSION: u32 = 2;
 #[serde(deny_unknown_fields)]
 pub struct ProviderConfig {
     pub schema_version: u32,
-    pub catalog: CatalogConfig,
     pub profiles: BTreeMap<String, ProviderProfile>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CatalogConfig {
-    pub source: CatalogSourceConfig,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path: Option<PathBuf>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub signature_path: Option<PathBuf>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CatalogSourceConfig {
-    Official,
-    File,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -43,37 +21,29 @@ pub enum CatalogSourceConfig {
 pub enum ProviderProfile {
     Grok {
         executable: PathBuf,
-        #[serde(default)]
-        version_policy: VersionPolicy,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        catalog_entry: Option<String>,
+        #[serde(default, skip_serializing_if = "ProviderAssertions::is_empty")]
+        assertions: ProviderAssertions,
         #[serde(default)]
         permissions: ProfilePermissions,
     },
     Cursor {
         executable: PathBuf,
-        #[serde(default)]
-        version_policy: VersionPolicy,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        catalog_entry: Option<String>,
+        #[serde(default, skip_serializing_if = "ProviderAssertions::is_empty")]
+        assertions: ProviderAssertions,
         #[serde(default)]
         permissions: ProfilePermissions,
     },
     Codex {
         adapter_path: PathBuf,
-        #[serde(default)]
-        version_policy: VersionPolicy,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        catalog_entry: Option<String>,
+        #[serde(default, skip_serializing_if = "ProviderAssertions::is_empty")]
+        assertions: ProviderAssertions,
         #[serde(default)]
         permissions: ProfilePermissions,
     },
     Claude {
         adapter_path: PathBuf,
-        #[serde(default)]
-        version_policy: VersionPolicy,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        catalog_entry: Option<String>,
+        #[serde(default, skip_serializing_if = "ProviderAssertions::is_empty")]
+        assertions: ProviderAssertions,
         #[serde(default)]
         permissions: ProfilePermissions,
     },
@@ -93,11 +63,10 @@ pub struct ResolvedProfile {
     pub provider: ProviderId,
     pub provider_spec: ProviderSpec,
     pub permission_policy: PermissionPolicy,
-    pub version_policy: VersionPolicy,
-    pub catalog_entry: Option<String>,
+    pub assertions: ProviderAssertions,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
 pub struct ConfigMigration {
     pub rendered: Option<String>,
     pub blocking_issues: Vec<String>,
@@ -139,12 +108,12 @@ impl ProviderConfig {
     pub fn load(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
         let content = read_secure_config(path.as_ref())?;
         let value: toml::Value = toml::from_str(&content)?;
-        let schema = value
-            .get("schema_version")
-            .and_then(toml::Value::as_integer)
-            .and_then(|value| u32::try_from(value).ok());
+        let schema = schema_version(&value);
         match schema {
             None | Some(1) => return Err(ConfigError::MigrationRequired { found: schema }),
+            Some(CONFIG_SCHEMA_VERSION) if is_catalog_era_shape(&value) => {
+                return Err(ConfigError::MigrationRequired { found: schema });
+            }
             Some(CONFIG_SCHEMA_VERSION) => {}
             Some(other) => return Err(ConfigError::UnsupportedSchema(other)),
         }
@@ -154,40 +123,15 @@ impl ProviderConfig {
     }
 
     pub fn resolve(&self, name: &str) -> Result<ResolvedProfile, ConfigError> {
-        let profile = self
-            .profiles
+        self.profiles
             .get(name)
-            .ok_or_else(|| ConfigError::ProfileNotFound(name.to_owned()))?;
-        profile.resolve(name)
+            .ok_or_else(|| ConfigError::ProfileNotFound(name.to_owned()))?
+            .resolve(name)
     }
 
     fn validate(&self) -> Result<(), ConfigError> {
         if self.schema_version != CONFIG_SCHEMA_VERSION {
             return Err(ConfigError::UnsupportedSchema(self.schema_version));
-        }
-        match self.catalog.source {
-            CatalogSourceConfig::Official => {
-                if self.catalog.path.is_some() || self.catalog.signature_path.is_some() {
-                    return Err(invalid(
-                        "catalog",
-                        "official source cannot specify path or signature_path",
-                    ));
-                }
-            }
-            CatalogSourceConfig::File => {
-                let path = self
-                    .catalog
-                    .path
-                    .as_deref()
-                    .ok_or_else(|| invalid("catalog", "file source requires path"))?;
-                let signature = self
-                    .catalog
-                    .signature_path
-                    .as_deref()
-                    .ok_or_else(|| invalid("catalog", "file source requires signature_path"))?;
-                validate_absolute_file("catalog", path)?;
-                validate_absolute_file("catalog", signature)?;
-            }
         }
         for (name, profile) in &self.profiles {
             validate_profile_name(name)?;
@@ -198,105 +142,55 @@ impl ProviderConfig {
 }
 
 impl ProviderProfile {
-    fn validate(&self, name: &str) -> Result<(), ConfigError> {
-        let (path, policy, entry) = match self {
+    fn parts(&self) -> (ProviderId, &Path, &ProviderAssertions, ProfilePermissions) {
+        match self {
             Self::Grok {
                 executable,
-                version_policy,
-                catalog_entry,
-                ..
-            }
-            | Self::Cursor {
+                assertions,
+                permissions,
+            } => (ProviderId::Grok, executable, assertions, *permissions),
+            Self::Cursor {
                 executable,
-                version_policy,
-                catalog_entry,
-                ..
-            } => (executable, version_policy, catalog_entry),
+                assertions,
+                permissions,
+            } => (ProviderId::Cursor, executable, assertions, *permissions),
             Self::Codex {
                 adapter_path,
-                version_policy,
-                catalog_entry,
-                ..
-            }
-            | Self::Claude {
+                assertions,
+                permissions,
+            } => (ProviderId::Codex, adapter_path, assertions, *permissions),
+            Self::Claude {
                 adapter_path,
-                version_policy,
-                catalog_entry,
-                ..
-            } => (adapter_path, version_policy, catalog_entry),
-        };
+                assertions,
+                permissions,
+            } => (ProviderId::Claude, adapter_path, assertions, *permissions),
+        }
+    }
+
+    fn validate(&self, name: &str) -> Result<(), ConfigError> {
+        let (_, path, assertions, _) = self.parts();
         validate_absolute_file(name, path)?;
-        if *policy == VersionPolicy::Exact && entry.is_none() {
-            return Err(invalid(name, "exact version_policy requires catalog_entry"));
-        }
-        if *policy != VersionPolicy::Exact && entry.is_some() {
-            return Err(invalid(
-                name,
-                "catalog_entry is only valid with exact version_policy",
-            ));
-        }
-        Ok(())
+        assertions
+            .validate()
+            .map_err(|message| invalid(name, message))
     }
 
     fn resolve(&self, name: &str) -> Result<ResolvedProfile, ConfigError> {
         self.validate(name)?;
-        let (provider, provider_spec, version_policy, catalog_entry, permissions) = match self {
-            Self::Grok {
-                executable,
-                version_policy,
-                catalog_entry,
-                permissions,
-            } => (
-                ProviderId::Grok,
-                ProviderSpec::Grok {
-                    executable: Some(executable.clone()),
-                },
-                *version_policy,
-                catalog_entry.clone(),
-                *permissions,
-            ),
-            Self::Cursor {
-                executable,
-                version_policy,
-                catalog_entry,
-                permissions,
-            } => (
-                ProviderId::Cursor,
-                ProviderSpec::Cursor {
-                    executable: Some(executable.clone()),
-                },
-                *version_policy,
-                catalog_entry.clone(),
-                *permissions,
-            ),
-            Self::Codex {
-                adapter_path,
-                version_policy,
-                catalog_entry,
-                permissions,
-            } => (
-                ProviderId::Codex,
-                ProviderSpec::Codex {
-                    adapter: Some(adapter_path.clone()),
-                },
-                *version_policy,
-                catalog_entry.clone(),
-                *permissions,
-            ),
-            Self::Claude {
-                adapter_path,
-                version_policy,
-                catalog_entry,
-                permissions,
-            } => (
-                ProviderId::Claude,
-                ProviderSpec::Claude {
-                    adapter: Some(adapter_path.clone()),
-                },
-                *version_policy,
-                catalog_entry.clone(),
-                *permissions,
-            ),
+        let (provider, path, assertions, permissions) = self.parts();
+        let provider_spec = match provider {
+            ProviderId::Grok => ProviderSpec::Grok {
+                executable: Some(path.to_owned()),
+            },
+            ProviderId::Cursor => ProviderSpec::Cursor {
+                executable: Some(path.to_owned()),
+            },
+            ProviderId::Codex => ProviderSpec::Codex {
+                adapter: Some(path.to_owned()),
+            },
+            ProviderId::Claude => ProviderSpec::Claude {
+                adapter: Some(path.to_owned()),
+            },
         };
         Ok(ResolvedProfile {
             name: name.to_owned(),
@@ -306,27 +200,35 @@ impl ProviderProfile {
                 ProfilePermissions::Deny => PermissionPolicy::Deny,
                 ProfilePermissions::AllowAll => PermissionPolicy::AllowAll,
             },
-            version_policy,
-            catalog_entry,
+            assertions: assertions.clone(),
         })
     }
 }
 
-pub fn check_migration(
-    path: impl AsRef<Path>,
-    catalog: &CompatibilityCatalog,
-) -> Result<ConfigMigration, ConfigError> {
+pub fn check_migration(path: impl AsRef<Path>) -> Result<ConfigMigration, ConfigError> {
     let content = read_secure_config(path.as_ref())?;
-    let legacy: LegacyProviderConfig = toml::from_str(&content)?;
-    migrate_legacy(legacy, catalog)
+    let value: toml::Value = toml::from_str(&content)?;
+    match schema_version(&value) {
+        None | Some(1) => migrate_v1(toml::from_str(&content)?),
+        Some(CONFIG_SCHEMA_VERSION) if is_catalog_era_shape(&value) => {
+            migrate_catalog_v2(toml::from_str(&content)?)
+        }
+        Some(CONFIG_SCHEMA_VERSION) => {
+            let config: ProviderConfig = toml::from_str(&content)?;
+            config.validate()?;
+            Ok(ConfigMigration {
+                rendered: Some(toml::to_string_pretty(&config)?),
+                blocking_issues: Vec::new(),
+                warnings: vec!["configuration already uses final schema v2".into()],
+            })
+        }
+        Some(other) => Err(ConfigError::UnsupportedSchema(other)),
+    }
 }
 
-pub fn write_migration(
-    path: impl AsRef<Path>,
-    catalog: &CompatibilityCatalog,
-) -> Result<PathBuf, ConfigError> {
+pub fn write_migration(path: impl AsRef<Path>) -> Result<PathBuf, ConfigError> {
     let path = path.as_ref();
-    let migration = check_migration(path, catalog)?;
+    let migration = check_migration(path)?;
     if !migration.blocking_issues.is_empty() {
         return Err(ConfigError::MigrationBlocked(
             migration.blocking_issues.join("; "),
@@ -339,19 +241,40 @@ pub fn write_migration(
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    let backup = path.with_extension(format!("toml.v1-backup-{timestamp}"));
-    let original = std::fs::read(path)?;
-    write_new_private(&backup, &original)?;
+    let backup = path.with_extension(format!("toml.pre-runtime-compat-{timestamp}.bak"));
+    write_new_private(&backup, &std::fs::read(path)?)?;
     atomic_replace_private(path, rendered.as_bytes())?;
     Ok(backup)
 }
 
+fn schema_version(value: &toml::Value) -> Option<u32> {
+    value
+        .get("schema_version")
+        .and_then(toml::Value::as_integer)
+        .and_then(|value| u32::try_from(value).ok())
+}
+
+fn is_catalog_era_shape(value: &toml::Value) -> bool {
+    value.get("catalog").is_some()
+        || value
+            .get("profiles")
+            .and_then(toml::Value::as_table)
+            .is_some_and(|profiles| {
+                profiles.values().any(|profile| {
+                    profile.as_table().is_some_and(|profile| {
+                        profile.contains_key("version_policy")
+                            || profile.contains_key("catalog_entry")
+                    })
+                })
+            })
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct LegacyProviderConfig {
+struct LegacyV1Config {
     #[serde(default)]
     environment: Option<LegacyEnvironmentLock>,
-    profiles: BTreeMap<String, LegacyProviderProfile>,
+    profiles: BTreeMap<String, LegacyV1Profile>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -365,7 +288,7 @@ struct LegacyEnvironmentLock {
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "provider", rename_all = "snake_case", deny_unknown_fields)]
-enum LegacyProviderProfile {
+enum LegacyV1Profile {
     Grok {
         executable: PathBuf,
         args: Vec<String>,
@@ -410,63 +333,38 @@ enum LegacyProviderProfile {
     },
 }
 
-fn migrate_legacy(
-    legacy: LegacyProviderConfig,
-    catalog: &CompatibilityCatalog,
-) -> Result<ConfigMigration, ConfigError> {
-    let mut issues = Vec::new();
+fn migrate_v1(legacy: LegacyV1Config) -> Result<ConfigMigration, ConfigError> {
     let mut warnings = Vec::new();
     if let Some(environment) = legacy.environment {
-        if environment.platform != "macos-arm64" || environment.acp_protocol != "v1" {
-            issues.push("legacy environment is not macos-arm64 / ACP v1".into());
-        }
-        if let Err(error) = verify_checksum(
-            "environment",
-            &environment.adapter_lockfile,
-            &environment.adapter_lockfile_sha256,
-        ) {
-            issues.push(error.to_string());
-        }
-        warnings.push("legacy environment lock is replaced by Driver and Catalog trust".into());
+        warnings.push(format!(
+            "removed legacy environment lock ({}, {}, {}, {})",
+            environment.platform,
+            environment.acp_protocol,
+            environment.adapter_lockfile.display(),
+            environment.adapter_lockfile_sha256
+        ));
     }
     let mut profiles = BTreeMap::new();
+    let mut issues = Vec::new();
     for (name, profile) in legacy.profiles {
         validate_profile_name(&name)?;
-        match migrate_profile(&name, profile, catalog) {
-            Ok((profile, mut profile_warnings)) => {
+        match migrate_v1_profile(&name, profile) {
+            Ok((profile, warning)) => {
                 profiles.insert(name, profile);
-                warnings.append(&mut profile_warnings);
+                warnings.push(warning);
             }
             Err(error) => issues.push(error.to_string()),
         }
     }
-    let rendered = if issues.is_empty() {
-        Some(toml::to_string_pretty(&ProviderConfig {
-            schema_version: CONFIG_SCHEMA_VERSION,
-            catalog: CatalogConfig {
-                source: CatalogSourceConfig::Official,
-                path: None,
-                signature_path: None,
-            },
-            profiles,
-        })?)
-    } else {
-        None
-    };
-    Ok(ConfigMigration {
-        rendered,
-        blocking_issues: issues,
-        warnings,
-    })
+    render_migration(profiles, issues, warnings)
 }
 
-fn migrate_profile(
+fn migrate_v1_profile(
     name: &str,
-    profile: LegacyProviderProfile,
-    catalog: &CompatibilityCatalog,
-) -> Result<(ProviderProfile, Vec<String>), ConfigError> {
-    let (provider, path, identity, artifacts, permissions, args_valid, evidence) = match profile {
-        LegacyProviderProfile::Grok {
+    profile: LegacyV1Profile,
+) -> Result<(ProviderProfile, String), ConfigError> {
+    let (profile, auth, evidence) = match profile {
+        LegacyV1Profile::Grok {
             executable,
             args,
             version,
@@ -475,18 +373,29 @@ fn migrate_profile(
             initialize_verified,
             session_new_verified,
             permissions,
-        } => (
-            ProviderId::Grok,
-            executable,
-            identity(version, None),
-            vec![artifact("executable", sha256)],
-            permissions,
-            args.iter()
+        } => {
+            if !args
+                .iter()
                 .map(String::as_str)
-                .eq(["--no-auto-update", "agent", "stdio"]),
-            (authentication, initialize_verified, session_new_verified),
-        ),
-        LegacyProviderProfile::Cursor {
+                .eq(["--no-auto-update", "agent", "stdio"])
+            {
+                return Err(invalid(name, "legacy args differ from the built-in Driver"));
+            }
+            (
+                ProviderProfile::Grok {
+                    executable,
+                    assertions: ProviderAssertions {
+                        version: Some(version),
+                        launch_sha256: Some(sha256),
+                        ..ProviderAssertions::default()
+                    },
+                    permissions,
+                },
+                authentication,
+                (initialize_verified, session_new_verified),
+            )
+        }
+        LegacyV1Profile::Cursor {
             executable,
             args,
             version,
@@ -495,16 +404,25 @@ fn migrate_profile(
             initialize_verified,
             session_new_verified,
             permissions,
-        } => (
-            ProviderId::Cursor,
-            executable,
-            identity(version, None),
-            vec![artifact("executable", sha256)],
-            permissions,
-            args.iter().map(String::as_str).eq(["acp"]),
-            (authentication, initialize_verified, session_new_verified),
-        ),
-        LegacyProviderProfile::Codex {
+        } => {
+            if !args.iter().map(String::as_str).eq(["acp"]) {
+                return Err(invalid(name, "legacy args differ from the built-in Driver"));
+            }
+            (
+                ProviderProfile::Cursor {
+                    executable,
+                    assertions: ProviderAssertions {
+                        version: Some(version),
+                        launch_sha256: Some(sha256),
+                        ..ProviderAssertions::default()
+                    },
+                    permissions,
+                },
+                authentication,
+                (initialize_verified, session_new_verified),
+            )
+        }
+        LegacyV1Profile::Codex {
             adapter_path,
             adapter_version,
             bundled_codex_version,
@@ -512,19 +430,22 @@ fn migrate_profile(
             initialize_verified,
             session_new_verified,
             permissions,
-        } => {
-            let (artifacts, _) = adapter_artifacts(name, &adapter_path)?;
-            (
-                ProviderId::Codex,
+        } => (
+            ProviderProfile::Codex {
                 adapter_path,
-                identity(adapter_version, Some(("codex", bundled_codex_version))),
-                artifacts,
+                assertions: ProviderAssertions {
+                    version: Some(adapter_version),
+                    components: [("codex".into(), bundled_codex_version)]
+                        .into_iter()
+                        .collect(),
+                    launch_sha256: None,
+                },
                 permissions,
-                true,
-                (authentication, initialize_verified, session_new_verified),
-            )
-        }
-        LegacyProviderProfile::Claude {
+            },
+            authentication,
+            (initialize_verified, session_new_verified),
+        ),
+        LegacyV1Profile::Claude {
             adapter_path,
             adapter_version,
             claude_agent_sdk_version,
@@ -532,129 +453,248 @@ fn migrate_profile(
             initialize_verified,
             session_new_verified,
             permissions,
-        } => {
-            let (artifacts, _) = adapter_artifacts(name, &adapter_path)?;
-            (
-                ProviderId::Claude,
+        } => (
+            ProviderProfile::Claude {
                 adapter_path,
-                identity(
-                    adapter_version,
-                    Some(("claude_agent_sdk", claude_agent_sdk_version)),
-                ),
-                artifacts,
+                assertions: ProviderAssertions {
+                    version: Some(adapter_version),
+                    components: [("claude_agent_sdk".into(), claude_agent_sdk_version)]
+                        .into_iter()
+                        .collect(),
+                    launch_sha256: None,
+                },
                 permissions,
-                true,
-                (authentication, initialize_verified, session_new_verified),
-            )
-        }
+            },
+            authentication,
+            (initialize_verified, session_new_verified),
+        ),
     };
-    validate_absolute_file(name, &path)?;
-    if !args_valid {
-        return Err(invalid(name, "legacy args differ from the built-in Driver"));
-    }
-    if !evidence.1 || !evidence.2 {
-        return Err(invalid(
-            name,
-            "legacy initialize/session evidence is incomplete",
-        ));
-    }
-    if provider == ProviderId::Grok || provider == ProviderId::Cursor {
-        verify_checksum(name, &path, &artifacts[0].digest)?;
-    }
-    let entry = exact_catalog_entry(catalog, provider, &identity, &artifacts).ok_or_else(|| {
-        invalid(
-            name,
-            "installed artifact is not present in the active Catalog",
-        )
-    })?;
-    let profile = match provider {
-        ProviderId::Grok => ProviderProfile::Grok {
-            executable: path,
-            version_policy: VersionPolicy::Exact,
-            catalog_entry: Some(entry.entry_id.clone()),
-            permissions,
-        },
-        ProviderId::Cursor => ProviderProfile::Cursor {
-            executable: path,
-            version_policy: VersionPolicy::Exact,
-            catalog_entry: Some(entry.entry_id.clone()),
-            permissions,
-        },
-        ProviderId::Codex => ProviderProfile::Codex {
-            adapter_path: path,
-            version_policy: VersionPolicy::Exact,
-            catalog_entry: Some(entry.entry_id.clone()),
-            permissions,
-        },
-        ProviderId::Claude => ProviderProfile::Claude {
-            adapter_path: path,
-            version_policy: VersionPolicy::Exact,
-            catalog_entry: Some(entry.entry_id.clone()),
-            permissions,
-        },
-    };
+    profile.validate(name)?;
     Ok((
         profile,
-        vec![format!(
-            "profile {name}: removed self-attested authentication/evidence ({})",
-            evidence.0
-        )],
+        format!(
+            "profile {name}: old pin was retained as local assertions; remove the assertions table to try new provider versions automatically; removed self-attested authentication/evidence ({auth}, initialize={}, session/new={})",
+            evidence.0, evidence.1
+        ),
     ))
 }
 
-fn exact_catalog_entry<'a>(
-    catalog: &'a CompatibilityCatalog,
-    provider: ProviderId,
-    identity: &ProviderIdentity,
-    artifacts: &[ArtifactDigest],
-) -> Option<&'a CatalogEntry> {
-    let mut expected = artifacts.to_vec();
-    expected.sort_by(|left, right| left.subject.cmp(&right.subject));
-    catalog.entries.iter().find(|entry| {
-        let mut actual = entry.artifacts.clone();
-        actual.sort_by(|left, right| left.subject.cmp(&right.subject));
-        entry.provider == provider && &entry.identity == identity && actual == expected
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyCatalogV2Config {
+    schema_version: u32,
+    catalog: toml::Value,
+    profiles: BTreeMap<String, LegacyCatalogProfile>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum LegacyPolicy {
+    Verified,
+    Exact,
+    Experimental,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "provider", rename_all = "snake_case", deny_unknown_fields)]
+enum LegacyCatalogProfile {
+    Grok {
+        executable: PathBuf,
+        #[serde(default = "default_verified")]
+        version_policy: LegacyPolicy,
+        catalog_entry: Option<String>,
+        #[serde(default)]
+        permissions: ProfilePermissions,
+    },
+    Cursor {
+        executable: PathBuf,
+        #[serde(default = "default_verified")]
+        version_policy: LegacyPolicy,
+        catalog_entry: Option<String>,
+        #[serde(default)]
+        permissions: ProfilePermissions,
+    },
+    Codex {
+        adapter_path: PathBuf,
+        #[serde(default = "default_verified")]
+        version_policy: LegacyPolicy,
+        catalog_entry: Option<String>,
+        #[serde(default)]
+        permissions: ProfilePermissions,
+    },
+    Claude {
+        adapter_path: PathBuf,
+        #[serde(default = "default_verified")]
+        version_policy: LegacyPolicy,
+        catalog_entry: Option<String>,
+        #[serde(default)]
+        permissions: ProfilePermissions,
+    },
+}
+
+const fn default_verified() -> LegacyPolicy {
+    LegacyPolicy::Verified
+}
+
+fn migrate_catalog_v2(legacy: LegacyCatalogV2Config) -> Result<ConfigMigration, ConfigError> {
+    if legacy.schema_version != CONFIG_SCHEMA_VERSION {
+        return Err(ConfigError::UnsupportedSchema(legacy.schema_version));
+    }
+    let _discarded_catalog = legacy.catalog;
+    let mut profiles = BTreeMap::new();
+    let mut issues = Vec::new();
+    let mut warnings =
+        vec!["removed Catalog source, signature, sequence, and update configuration".into()];
+    for (name, profile) in legacy.profiles {
+        let (provider, path, policy, entry, permissions) = match profile {
+            LegacyCatalogProfile::Grok {
+                executable,
+                version_policy,
+                catalog_entry,
+                permissions,
+            } => (
+                ProviderId::Grok,
+                executable,
+                version_policy,
+                catalog_entry,
+                permissions,
+            ),
+            LegacyCatalogProfile::Cursor {
+                executable,
+                version_policy,
+                catalog_entry,
+                permissions,
+            } => (
+                ProviderId::Cursor,
+                executable,
+                version_policy,
+                catalog_entry,
+                permissions,
+            ),
+            LegacyCatalogProfile::Codex {
+                adapter_path,
+                version_policy,
+                catalog_entry,
+                permissions,
+            } => (
+                ProviderId::Codex,
+                adapter_path,
+                version_policy,
+                catalog_entry,
+                permissions,
+            ),
+            LegacyCatalogProfile::Claude {
+                adapter_path,
+                version_policy,
+                catalog_entry,
+                permissions,
+            } => (
+                ProviderId::Claude,
+                adapter_path,
+                version_policy,
+                catalog_entry,
+                permissions,
+            ),
+        };
+        let assertions = match policy {
+            LegacyPolicy::Verified | LegacyPolicy::Experimental => ProviderAssertions::default(),
+            LegacyPolicy::Exact => match entry.as_deref().and_then(legacy_catalog_assertions) {
+                Some(assertions) => assertions,
+                None => {
+                    issues.push(format!(
+                        "profile {name}: exact Catalog entry could not be converted"
+                    ));
+                    continue;
+                }
+            },
+        };
+        let migrated = match provider {
+            ProviderId::Grok => ProviderProfile::Grok {
+                executable: path,
+                assertions,
+                permissions,
+            },
+            ProviderId::Cursor => ProviderProfile::Cursor {
+                executable: path,
+                assertions,
+                permissions,
+            },
+            ProviderId::Codex => ProviderProfile::Codex {
+                adapter_path: path,
+                assertions,
+                permissions,
+            },
+            ProviderId::Claude => ProviderProfile::Claude {
+                adapter_path: path,
+                assertions,
+                permissions,
+            },
+        };
+        if let Err(error) = migrated.validate(&name) {
+            issues.push(error.to_string());
+        } else {
+            if matches!(policy, LegacyPolicy::Exact) {
+                warnings.push(format!(
+                    "profile {name}: exact Catalog entry was retained as local assertions"
+                ));
+            }
+            profiles.insert(name, migrated);
+        }
+    }
+    render_migration(profiles, issues, warnings)
+}
+
+fn legacy_catalog_assertions(entry: &str) -> Option<ProviderAssertions> {
+    let (version, component, digest) = match entry {
+        "grok/0.2.118/aarch64-apple-darwin/sha256-2de5b960" => (
+            "0.2.118",
+            None,
+            "2de5b9609a03492dd6b9e4cca9637d651fe998bb8371bf9f852e7b28b38c034e",
+        ),
+        "cursor/2026.07.20-8cc9c0b/aarch64-apple-darwin/sha256-eed61c52" => (
+            "2026.07.20-8cc9c0b",
+            None,
+            "eed61c5224668c9236334c4c68936a16aecc37374b592f59e31eb50433817831",
+        ),
+        "codex/1.1.9/aarch64-apple-darwin/sha256-c4fdf929" => (
+            "1.1.9",
+            Some(("codex", "0.145.0")),
+            "c4fdf92936979fb1791d77437d75f934ed9c42e47738343620fcbe5c697cf1e6",
+        ),
+        "claude/0.64.2/aarch64-apple-darwin/sha256-260aac90" => (
+            "0.64.2",
+            Some(("claude_agent_sdk", "0.3.220")),
+            "260aac90bf75f197b93640087c1de66441761d43c2784efa035fdcee60b5dacd",
+        ),
+        _ => return None,
+    };
+    Some(ProviderAssertions {
+        version: Some(version.into()),
+        components: component
+            .map(|(name, value)| [(name.into(), value.into())].into_iter().collect())
+            .unwrap_or_default(),
+        launch_sha256: Some(digest.into()),
     })
 }
 
-fn identity(version: String, component: Option<(&str, String)>) -> ProviderIdentity {
-    ProviderIdentity {
-        display_version: version.clone(),
-        normalized_version: version,
-        components: component
-            .map(|(name, value)| [(name.to_owned(), value)].into_iter().collect())
-            .unwrap_or_default(),
-    }
-}
-
-fn artifact(subject: &str, digest: String) -> ArtifactDigest {
-    ArtifactDigest {
-        subject: subject.into(),
-        algorithm: DigestAlgorithm::Sha256,
-        digest: digest.to_ascii_lowercase(),
-    }
-}
-
-fn adapter_artifacts(
-    name: &str,
-    path: &Path,
-) -> Result<(Vec<ArtifactDigest>, PathBuf), ConfigError> {
-    validate_absolute_file(name, path)?;
-    let executable =
-        std::fs::canonicalize(path).map_err(|error| invalid(name, error.to_string()))?;
-    let package = executable
-        .parent()
-        .and_then(Path::parent)
-        .map(|directory| directory.join("package.json"))
-        .ok_or_else(|| invalid(name, "adapter package metadata path is unavailable"))?;
-    validate_absolute_file(name, &package)?;
-    Ok((
-        vec![
-            artifact("executable", sha256(&executable)?),
-            artifact("package_metadata", sha256(&package)?),
-        ],
-        package,
-    ))
+fn render_migration(
+    profiles: BTreeMap<String, ProviderProfile>,
+    blocking_issues: Vec<String>,
+    warnings: Vec<String>,
+) -> Result<ConfigMigration, ConfigError> {
+    let rendered = if blocking_issues.is_empty() {
+        Some(toml::to_string_pretty(&ProviderConfig {
+            schema_version: CONFIG_SCHEMA_VERSION,
+            profiles,
+        })?)
+    } else {
+        None
+    };
+    Ok(ConfigMigration {
+        rendered,
+        blocking_issues,
+        warnings,
+    })
 }
 
 fn read_secure_config(path: &Path) -> Result<String, ConfigError> {
@@ -701,34 +741,6 @@ fn validate_absolute_file(name: &str, path: &Path) -> Result<(), ConfigError> {
         return Err(invalid(name, "path must resolve to a regular file"));
     }
     Ok(())
-}
-
-fn verify_checksum(name: &str, path: &Path, expected: &str) -> Result<(), ConfigError> {
-    if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(invalid(
-            name,
-            "sha256 must contain exactly 64 hexadecimal digits",
-        ));
-    }
-    let actual = sha256(path)?;
-    if !actual.eq_ignore_ascii_case(expected) {
-        return Err(invalid(name, "sha256 does not match the pinned file"));
-    }
-    Ok(())
-}
-
-fn sha256(path: &Path) -> Result<String, ConfigError> {
-    let mut file = std::fs::File::open(path)?;
-    let mut digest = Sha256::new();
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        let read = file.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        digest.update(&buffer[..read]);
-    }
-    Ok(format!("{:x}", digest.finalize()))
 }
 
 fn write_new_private(path: &Path, bytes: &[u8]) -> Result<(), ConfigError> {

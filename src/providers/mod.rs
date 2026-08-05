@@ -9,8 +9,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::compatibility::{ArtifactDigest, DriverId, ProviderIdentity};
-use crate::{AdmissionError, PermissionPolicy, ProviderId, Task};
+use crate::{AdmissionError, DriverId, PermissionPolicy, ProviderAssertions, ProviderId, Task};
 
 pub use claude::claude_driver;
 pub use codex::codex_driver;
@@ -19,7 +18,7 @@ pub use grok::grok_driver;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum AcpVersionPolicy {
+pub enum AcpProtocolPolicy {
     StableV1,
 }
 
@@ -72,7 +71,7 @@ pub struct ProviderDriver {
     pub args: Vec<String>,
     pub identity_probe: IdentityProbe,
     pub artifact_probe: ArtifactProbe,
-    pub protocol: AcpVersionPolicy,
+    pub protocol: AcpProtocolPolicy,
     pub required_capabilities: CapabilitySet,
     pub allowed_env: Vec<String>,
     pub fixed_env: BTreeMap<String, String>,
@@ -88,113 +87,6 @@ pub fn all_provider_drivers() -> [ProviderDriver; 4] {
         grok_driver(None),
         cursor_driver(None),
     ]
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ObservedProvider {
-    pub identity: ProviderIdentity,
-    pub artifacts: Vec<ArtifactDigest>,
-    pub executable: PathBuf,
-    pub executable_identity: ExecutableFileIdentity,
-    pub qualified_files: Vec<QualifiedArtifactFile>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct QualifiedArtifactFile {
-    pub subject: String,
-    pub path: PathBuf,
-    pub identity: ExecutableFileIdentity,
-    pub executable_required: bool,
-}
-
-impl ObservedProvider {
-    pub fn verify_qualified_files(&self) -> std::io::Result<()> {
-        for file in &self.qualified_files {
-            file.identity
-                .verify_artifact_path(&file.path, file.executable_required)?;
-        }
-        Ok(())
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ExecutableFileIdentity {
-    pub owner: u32,
-    pub mode: u32,
-    pub device: u64,
-    pub inode: u64,
-    pub size: u64,
-    pub modified_seconds: i64,
-    pub modified_nanoseconds: i64,
-}
-
-impl ExecutableFileIdentity {
-    pub fn from_path(path: &std::path::Path) -> std::io::Result<Self> {
-        Self::from_artifact_path(path, true)
-    }
-
-    pub fn from_artifact_path(
-        path: &std::path::Path,
-        executable_required: bool,
-    ) -> std::io::Result<Self> {
-        use std::os::unix::fs::MetadataExt as _;
-        let metadata = std::fs::metadata(path)?;
-        if !metadata.is_file() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "provider executable is not a regular file",
-            ));
-        }
-        let owner = metadata.uid();
-        if owner != unsafe { libc::geteuid() } && owner != 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "provider artifact must be owned by the current user or root",
-            ));
-        }
-        let mode = metadata.mode();
-        if mode & 0o022 != 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "provider artifact must not be group/world writable",
-            ));
-        }
-        if executable_required && mode & 0o111 == 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                "provider launch artifact is not executable",
-            ));
-        }
-        Ok(Self {
-            owner,
-            mode,
-            device: metadata.dev(),
-            inode: metadata.ino(),
-            size: metadata.size(),
-            modified_seconds: metadata.mtime(),
-            modified_nanoseconds: metadata.mtime_nsec(),
-        })
-    }
-
-    pub fn verify_path(&self, path: &std::path::Path) -> std::io::Result<()> {
-        self.verify_artifact_path(path, true)
-    }
-
-    pub fn verify_artifact_path(
-        &self,
-        path: &std::path::Path,
-        executable_required: bool,
-    ) -> std::io::Result<()> {
-        let current = Self::from_artifact_path(path, executable_required)?;
-        if &current == self {
-            Ok(())
-        } else {
-            Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "provider executable changed after artifact qualification",
-            ))
-        }
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -245,17 +137,14 @@ impl ProviderSpec {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SpawnRequest {
     pub provider: ProviderSpec,
     pub cwd: PathBuf,
     pub task: Task,
     pub permission_policy: PermissionPolicy,
     #[serde(default)]
-    pub version_policy: crate::VersionPolicy,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub catalog_entry: Option<String>,
-    #[serde(default)]
-    pub allow_unverified_mutations: bool,
+    pub assertions: ProviderAssertions,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -268,13 +157,10 @@ pub struct ListQuery {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ProviderSnapshot {
     pub id: ProviderId,
-    pub protocol: AcpVersionPolicy,
+    pub protocol: AcpProtocolPolicy,
     pub driver_id: DriverId,
     pub driver_revision: u32,
     pub required_capabilities: CapabilitySet,
-    pub recommended: Option<crate::RecommendedCatalogEntry>,
-    pub catalog_sequence: u64,
-    pub catalog_digest: String,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]

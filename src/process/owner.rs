@@ -33,10 +33,10 @@ impl ProcessTreeOwner {
                 .is_some_and(|name| name == "agentmux")
         });
         let mut config = if let Some(executable) = executable.filter(|_| use_supervisor) {
+            let environment_names = supervisor_environment_names(&self.manifest);
             let supervisor_args = std::iter::once(String::from("__supervise"))
                 .chain(
-                    self.manifest
-                        .allowed_env
+                    environment_names
                         .iter()
                         .flat_map(|name| [String::from("--allow-env"), name.clone()]),
                 )
@@ -56,5 +56,29 @@ impl ProcessTreeOwner {
             config = config.env(name, value);
         }
         AcpAgent::new(config)
+    }
+}
+
+fn supervisor_environment_names(driver: &ProviderDriver) -> Vec<String> {
+    let mut names = driver.allowed_env.clone();
+    names.extend(driver.fixed_env.keys().cloned());
+    names.sort();
+    names.dedup();
+    names
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn supervisor_forwards_driver_fixed_environment_names() {
+        let driver = crate::codex_driver(None);
+        let names = supervisor_environment_names(&driver);
+        assert!(names.iter().any(|name| name == "INITIAL_AGENT_MODE"));
+        assert!(names.iter().any(|name| name == "CODEX_CONFIG"));
+        assert!(names.iter().any(|name| name == "PATH"));
+        let unique = names.iter().collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(unique.len(), names.len());
     }
 }

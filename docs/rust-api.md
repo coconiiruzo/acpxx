@@ -1,10 +1,10 @@
 # Rust API
 
-The package name is `acpxx`; the distributed binary is `agentmux`. The primary
-in-process entry point is `acpxx::Broker`.
+The package is `acpxx`; the binary is `agentmux`. `acpxx::Broker` is the in-process entry point.
 
 ```rust,no_run
-use acpxx::{Broker, ProviderSpec, SpawnRequest, Task, WaitOptions};
+use acpxx::{Broker, PermissionPolicy, ProviderAssertions, ProviderSpec, SpawnRequest, Task,
+            WaitOptions};
 
 # async fn example() -> acpxx::Result<()> {
 let broker = Broker::new(4);
@@ -12,29 +12,22 @@ let spawned = broker.spawn(SpawnRequest {
     provider: ProviderSpec::grok(),
     cwd: std::env::current_dir().unwrap(),
     task: Task::new("Summarize the repository"),
-    permission_policy: acpxx::PermissionPolicy::Deny,
-    version_policy: acpxx::VersionPolicy::Verified,
-    catalog_entry: None,
-    allow_unverified_mutations: false,
+    permission_policy: PermissionPolicy::Deny,
+    assertions: ProviderAssertions::default(),
 }).await?;
 let receipt = broker.wait_run(spawned.run, WaitOptions::default()).await?;
-assert!(receipt.state.is_terminal());
+assert!(receipt.provider_identity.is_some());
 broker.shutdown().await?;
 # Ok(())
 # }
 ```
 
-Control methods are `spawn`, `send`, `followup`, `interrupt`, and `list`.
-Observation methods are `events`, `wait_run`, `wait_any`, and `wait_all`.
-Handles contain UUIDv7 IDs and must be passed back exactly; display names,
-paths, cwd, provider names, and session IDs are never accepted as identity.
+Control methods are `spawn`, `send`, `followup`, `interrupt`, and `list`; observation methods are
+`events`, `wait_run`, `wait_any`, and `wait_all`. Handles contain UUIDv7 IDs and must be returned
+exactly. `SpawnRequest.assertions` defaults to no version gate and supports exact version,
+components, and launch SHA-256 only.
 
-The public contract is frozen in [`PRODUCT_CONTRACT.md`](../PRODUCT_CONTRACT.md).
-The local daemon uses the same serializable request and response types over a
-versioned, bounded UDS protocol; it is not an HTTP API.
-
-Provider compatibility types—`ProviderDriver`, `ProviderIdentity`,
-`ArtifactDigest`, `VersionPolicy`, `ResolvedProviderLock`, `CatalogStatus`, and
-`ProviderLockSummary`—are public. Drivers observe; the signed Catalog and
-resolver authorize. `AgentSnapshot.provider_lock` contains the immutable full
-lock while terminal receipts retain its redacted audit summary.
+`ProviderExecutionIdentity` is audit/continuity information: driver ID/revision, target, canonical
+path, launch digest, best-effort observations, ACP protocol/agent info/capability digest, and
+assertion result. It does not represent trust or a support promise. IPC v2 serializes the same final
+field names over a bounded local socket; no HTTP API exists.

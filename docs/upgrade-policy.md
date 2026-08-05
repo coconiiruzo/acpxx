@@ -1,27 +1,26 @@
 # Upgrade policy
 
-agentmux follows semantic versioning for its public handle, control,
-observation, receipt, and IPC contracts. Patch releases fix compatible defects;
-minor releases may add compatible fields or capabilities; incompatible changes
-require a major release.
+agentmux follows semantic versioning for Rust API, receipt, config, SQLite, and IPC contracts.
+Provider releases are independent: new versions are attempted without an agentmux data update.
+Only a breaking launch command, authentication, ACP, permission, or driver-interface change requires
+a `ProviderDriver` code update and driver-revision increment.
 
-Provider compatibility is independently versioned, signed Catalog data. A new
-entry requires exact identity/artifact evidence, authenticated conformance,
-process audit, capability inventory, protected approval, and a strictly higher
-Catalog sequence. Candidate discovery never publishes. Runtime auto-install,
-provider auto-update, rollback, and version-only authorization are prohibited.
+agentmux never discovers, installs, updates, recommends, blocks, or falls back between provider
+versions. `TESTED_PROVIDERS.md` is historical observation only.
 
-Before upgrading:
+## Upgrade to v2.0.0
 
-1. Download and verify checksum plus GitHub attestation.
-2. Read the active Catalog status, compatibility matrix, and release notes.
-3. Run `agentmux doctor --json` against the new binary and existing profiles.
-4. Stop the old broker cleanly, then start the new broker.
+1. Verify the release checksum and GitHub attestation.
+2. Stop the old broker cleanly and back up config/database files.
+3. Run `agentmux config migrate --check --json`.
+4. Review preserved local assertions. Delete them only if you want future local versions to float.
+5. Run `agentmux config migrate --write`, then `provider inspect` and `doctor`.
+6. Start the v2 broker. SQLite v1/v2 migrates transactionally to v3.
 
-An executable upgrade never resumes old provider sessions. Persisted terminal
-receipts remain queryable; any prior active Run is reconciled to
-`host_restarted`, and prior Agents are continuity-lost. SQLite migrations are
-forward-only and transactional. Version 2 migrates schema-v1 records with
-`provider_lock = null` and never infers an old lock from the current Catalog.
-Downgrading a schema-v2 database to agentmux 1.x is unsupported; back up the
-database and provider config before upgrade.
+Config write creates `providers.toml.pre-runtime-compat-<time>.bak` with mode 0600. An exact legacy
+entry that cannot be converted blocks migration rather than silently dropping the constraint.
+Migration performs no network access.
+
+Old active Runs become `host_restarted`; prior Agents become continuity-lost. The broker never
+relaunches a process or restores a session automatically. A database with a newer unknown schema is
+refused without rewriting it.

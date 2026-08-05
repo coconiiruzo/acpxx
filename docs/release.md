@@ -1,46 +1,47 @@
-# Release procedure
+# v2 release procedure
 
-v2 releases target `aarch64-apple-darwin`. The checked-in packaging path uses a
-locked dependency graph and deterministic archive metadata.
+Releases target `aarch64-apple-darwin`, use the locked dependency graph, and produce deterministic
+archive metadata. Runtime provider-version data is not packaged.
 
-## Local reproduction
+## Gates
+
+```bash
+cargo fmt --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-targets
+cargo test --test lifecycle_soak fake_lifecycle_ten_thousand_runs -- --ignored
+cargo test --test supervisor one_thousand_short_lived_provider_processes_are_reaped -- --ignored --exact
+cargo test --test provider_conformance -- --ignored --test-threads=1
+cargo test --test provider_capability_audit -- --ignored --test-threads=1
+cargo test --test provider_permission_audit -- --ignored --test-threads=1
+cargo test --test provider_process_audit -- --ignored --test-threads=1
+cargo run --release --bin agentmux -- benchmark --enforce --json
+```
+
+Run the static absence checks from the migration plan and verify config v1/transient-v2 plus SQLite
+v1/v2 fixtures. Record only real measurements actually obtained in `TESTED_PROVIDERS.md`.
+
+## Reproducible package
 
 ```bash
 rustup target add aarch64-apple-darwin
 SOURCE_DATE_EPOCH=0 scripts/package-release.sh
-shasum -a 256 dist/agentmux-*-aarch64-apple-darwin.tar.gz
+shasum -a 256 dist/agentmux-2.0.0-aarch64-apple-darwin.tar.gz
 ```
 
-Running the script twice from the same source and Rust toolchain must yield the
-same archive checksum. It emits the binary archive, `SHA256SUMS`, SPDX 2.3 SBOM,
-third-party license inventory, and checksum-bound Homebrew formula under
-`dist/`.
+Run twice from the same source/toolchain and require identical SHA-256. The archive contains the
+binary, README, LICENSE, SECURITY, `TESTED_PROVIDERS.md`, SBOM, and third-party license inventory.
+`SHA256SUMS` and a checksum-bound Homebrew formula are emitted beside it.
 
-## Maintainer release
+## Publish
 
-1. Confirm Cargo is `2.0.0`, the embedded bootstrap signature verifies, its
-   evidence digests resolve, and the public matrix is freshly rendered.
-2. Run fmt, clippy, all tests, ignored 10,000-Run and 1,000-process soaks, the
-   four authenticated provider suites, and the release benchmark.
-3. Commit the release state and create an annotated `vVERSION` tag.
-4. Push the tag. `.github/workflows/release.yml` runs on a GitHub-hosted macOS
-   arm64 runner, packages the artifact, creates Sigstore/GitHub provenance and
-   SBOM attestations, and publishes all files to the GitHub release.
-5. Download the published archive and verify it independently:
+1. Confirm `Cargo.toml` is `2.0.0`, all gates pass, and release notes cover the removal of central
+   version authorization, optional local assertions, `provider inspect`, config migration, SQLite
+   v3, and IPC v2 incompatibility.
+2. Commit the release state and create an annotated `v2.0.0` tag.
+3. Push the tag. `.github/workflows/release.yml` tests, packages, attests provenance/SBOM, and
+   creates the GitHub release on macOS arm64.
+4. Download and independently verify checksum and attestation.
 
-```bash
-shasum -a 256 -c SHA256SUMS
-gh attestation verify agentmux-VERSION-aarch64-apple-darwin.tar.gz \
-  -R coconiiruzo/acpxx
-```
-
-The workflow rejects a tag that does not match `Cargo.toml`. No signing secret,
-provider credential, or automatic provider installer is stored in the release
-job.
-
-Catalog-only releases use the separate protected
-`compatibility-publish.yml` workflow. Discovery only opens a candidate issue;
-authenticated qualification emits machine-readable evidence from a controlled
-macOS arm64 runner. Approved exact bytes are signed and published under an
-immutable sequence tag. Bad data is corrected with a higher sequence that
-blocks/deprecates an entry—never by republishing or rolling back an old one.
+No provider credential, update service, signing secret for runtime metadata, or automatic provider
+installer belongs in the release job.

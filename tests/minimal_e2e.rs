@@ -20,12 +20,6 @@ async fn persistent_run_streams_output_and_retains_the_session() {
     assert_eq!(receipt.output.text, "mock-ok");
     assert_eq!(receipt.output.event_count, 1);
     assert!(receipt.cleanup.complete);
-    let provider_lock = receipt.provider_lock.as_ref().unwrap();
-    assert_eq!(
-        provider_lock.compatibility,
-        acpxx::CompatibilityLevel::Experimental
-    );
-    assert_eq!(provider_lock.driver_id, acpxx::DriverId::new("grok-native"));
     assert_eq!(receipt.cleanup.process, acpxx::ProcessDisposition::Retained);
     assert!(receipt.metrics.provider_probe > Duration::ZERO);
     assert!(receipt.metrics.adapter_spawn > Duration::ZERO);
@@ -50,61 +44,7 @@ async fn persistent_run_streams_output_and_retains_the_session() {
         Some(acpxx::Continuity::Available(_))
     ));
     assert!(snapshot.agents[0].provider_capabilities.is_some());
-    assert_eq!(
-        snapshot.agents[0]
-            .provider_lock
-            .as_ref()
-            .unwrap()
-            .canonical_digest(),
-        receipt
-            .session_stamp
-            .as_ref()
-            .unwrap()
-            .provider_profile_fingerprint
-    );
     assert_eq!(snapshot.agents[0].active_run_id, None);
-}
-
-#[tokio::test]
-async fn verified_policy_rejects_an_unknown_artifact_before_provider_spawn() {
-    let broker = Broker::new(1);
-    let mut request = mock_request("normal", 0.0);
-    request.version_policy = acpxx::VersionPolicy::Verified;
-    let spawned = broker.spawn(request).await.unwrap();
-    let receipt = broker
-        .wait_run(spawned.run, WaitOptions::default())
-        .await
-        .unwrap();
-    assert_eq!(receipt.state, TerminalRunState::Failed);
-    assert_eq!(
-        receipt.failure.as_ref().map(|failure| failure.code),
-        Some(FailureCode::ProviderNotVerified)
-    );
-    assert_eq!(
-        receipt.cleanup.process,
-        acpxx::ProcessDisposition::NeverStarted
-    );
-    assert!(receipt.provider_lock.is_none());
-}
-
-#[tokio::test]
-async fn experimental_mutations_require_the_second_explicit_opt_in() {
-    let broker = Broker::new(1);
-    let mut request = mock_request("normal", 0.0);
-    request.permission_policy = PermissionPolicy::AllowAll;
-    let spawned = broker.spawn(request).await.unwrap();
-    let receipt = broker
-        .wait_run(spawned.run, WaitOptions::default())
-        .await
-        .unwrap();
-    assert_eq!(
-        receipt.failure.as_ref().map(|failure| failure.code),
-        Some(FailureCode::UnverifiedMutationDenied)
-    );
-    assert_eq!(
-        receipt.cleanup.process,
-        acpxx::ProcessDisposition::NeverStarted
-    );
 }
 
 #[tokio::test]
@@ -244,7 +184,6 @@ async fn explicit_allow_policy_selects_the_advertised_permission() {
     let broker = Broker::new(1);
     let mut request = mock_request("permission_allow", 0.0);
     request.permission_policy = PermissionPolicy::AllowAll;
-    request.allow_unverified_mutations = true;
     let spawned = broker.spawn(request).await.unwrap();
     let receipt = tokio::time::timeout(
         Duration::from_secs(2),
@@ -262,7 +201,6 @@ async fn terminal_host_services_execute_inside_the_agent_root() {
     let broker = Broker::new(1);
     let mut request = mock_request("terminal", 0.0);
     request.permission_policy = PermissionPolicy::AllowAll;
-    request.allow_unverified_mutations = true;
     let spawned = broker.spawn(request).await.unwrap();
     let receipt = tokio::time::timeout(
         Duration::from_secs(2),

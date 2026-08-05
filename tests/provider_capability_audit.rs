@@ -34,14 +34,7 @@ async fn authenticated_provider_capability_inventory() {
             "claude-default",
         ),
     ];
-    let selected = std::env::var("AGENTMUX_REAL_PROVIDER").ok();
     for (provider, variable, profile) in providers {
-        if selected
-            .as_deref()
-            .is_some_and(|value| value != provider.as_str())
-        {
-            continue;
-        }
         let broker = Broker::new(1);
         let spawned = broker
             .spawn(SpawnRequest {
@@ -50,9 +43,7 @@ async fn authenticated_provider_capability_inventory() {
                 task: Task::new("Do not use tools. Reply with exactly: capability-audit-ok")
                     .with_deadline(Duration::from_secs(120)),
                 permission_policy: PermissionPolicy::Deny,
-                version_policy: acpxx::VersionPolicy::Verified,
-                catalog_entry: None,
-                allow_unverified_mutations: false,
+                assertions: Default::default(),
             })
             .await
             .unwrap();

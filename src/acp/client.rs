@@ -395,7 +395,7 @@ pub(super) fn classify_acp_error(stage: RunStage, message: String) -> RunFailure
         FailureCode::ProviderSpawnFailed
     } else if lower.contains("incoming transport closed") || lower.contains("process exited") {
         FailureCode::ProviderCrashed
-    } else if lower.contains("json") || lower.contains("parse") || lower.contains("protocol") {
+    } else if lower.contains("json") || lower.contains("parse") {
         FailureCode::ProtocolCorruption
     } else {
         match stage {

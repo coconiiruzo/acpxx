@@ -58,9 +58,7 @@ async fn authenticated_conformance(provider: ProviderId, path_variable: &str, pr
             ))
             .with_deadline(Duration::from_secs(120)),
             permission_policy: PermissionPolicy::Deny,
-            version_policy: acpxx::VersionPolicy::Verified,
-            catalog_entry: None,
-            allow_unverified_mutations: false,
+            assertions: Default::default(),
         })
         .await
         .unwrap();
@@ -127,7 +125,6 @@ async fn authenticated_conformance(provider: ProviderId, path_variable: &str, pr
         "previous Run output was duplicated into the follow-up: {second:?}"
     );
     assert_eq!(second.session_stamp.as_ref(), Some(&first_stamp));
-    assert_eq!(second.provider_lock, first.provider_lock);
 
     let cancellable = broker
         .followup(

@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use super::{AcpVersionPolicy, ArtifactProbe, CapabilitySet, IdentityProbe, ProviderDriver};
+use super::{AcpProtocolPolicy, ArtifactProbe, CapabilitySet, IdentityProbe, ProviderDriver};
 use crate::{DriverId, ProviderId};
 
 #[must_use]
@@ -19,7 +19,7 @@ pub fn cursor_driver(executable: Option<PathBuf>) -> ProviderDriver {
         artifact_probe: ArtifactProbe::LaunchExecutableSha256 {
             package_metadata: None,
         },
-        protocol: AcpVersionPolicy::StableV1,
+        protocol: AcpProtocolPolicy::StableV1,
         required_capabilities: CapabilitySet(Vec::new()),
         allowed_env: environment_allowlist(&["CURSOR_API_KEY", "CURSOR_API_ENDPOINT"]),
         fixed_env: Default::default(),

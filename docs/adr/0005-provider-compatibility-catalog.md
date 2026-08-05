@@ -1,56 +1,26 @@
 # ADR 0005: Signed provider Compatibility Catalog
 
-Status: accepted for agentmux 2.0.0
+Status: superseded by ADR-0006 before v2.0.0 publication
 
-## Context
+## Historical context
 
-agentmux 1.x compiles one tested version per provider into the binary and asks
-profiles to repeat version, checksum, and qualification evidence. That is safe
-but couples every compatible provider release to an agentmux binary release
-and treats user-authored evidence as authority.
+PR #4 replaced compile-time exact provider pins with a separately signed list of accepted exact
+provider identities. The proposal kept four built-in drivers, embedded a public-key ring and signed
+bootstrap data, supported explicit immutable updates, and resolved a profile plus observed artifact
+into an authorization lock. It also separated useful launch observation and process hardening from
+provider-specific behavior.
 
-## Decision
+## Historical decision
 
-Keep exactly four built-in `ProviderDriver`s. Drivers own launch behavior,
-identity and artifact observation, environment, authentication, permissions,
-ACP transport, and process supervision. A separately signed Compatibility
-Catalog owns the set of accepted exact provider identities and artifact
-digests for a target and Driver revision.
+The list would have owned accepted versions, artifact digests, sequence, expiry, deprecation, and
+blocked state while drivers retained command, args, environment, authentication, ACP, and process
+behavior. Unfamiliar versions required a special policy and a separate mutation opt-in. Provider
+binaries were never downloaded.
 
-Catalog bytes are signed directly with detached Ed25519 signatures. The
-binary embeds a public-key ring and a signed bootstrap Catalog. Explicit
-updates install immutable Catalog generations after signature, schema,
-expiry, and monotonically increasing sequence validation. `spawn` performs no
-network access.
+## Supersession
 
-At Agent initialization, the runtime resolves the selected profile, observed
-identity, artifact digests, target, Driver revision, and an immutable Catalog
-snapshot into a `ResolvedProviderLock`. Existing Agents and followups retain
-that lock, process, transport, and session even when Catalog data changes.
-
-The policies are:
-
-- `verified`: exact match in an active verified/deprecated Catalog entry;
-- `exact`: exact match to a named Catalog entry; and
-- `experimental`: recorded but unverified identity, with known-blocked denial
-  and a separate mutation opt-in.
-
-Catalog entries cannot carry commands, arguments, paths, environment values,
-or permission policy. Provider binaries and adapters are never downloaded or
-updated by agentmux.
-
-## Trust and rollback
-
-The offline runtime trust root is the embedded Ed25519 keyring. Catalog
-sequence is monotonic per Catalog ID. A bad entry is corrected by publishing a
-higher sequence that deprecates or blocks it; an older Catalog is never
-reactivated as rollback. Signing private keys are not stored in this
-repository or ordinary CI jobs.
-
-## Consequences
-
-Provider compatibility can advance without changing the agentmux binary when
-the built-in Driver contract is unchanged. Driver behavior changes still
-require a binary release and a new Driver revision. Config, receipt,
-persistence, Rust API, and IPC contracts change incompatibly, so this is a
-2.0.0 migration.
+This design was reverted before release because it still required maintainers to discover, test,
+sign, and publish provider releases even when the driver contract had not changed. The final v2
+design retains local artifact safety, observations, TOCTOU protection, identity auditing, and strict
+continuity, but separates observations from authorization. Unknown versions use ACP runtime
+negotiation, and user-owned exact constraints use local assertions. See ADR-0006.

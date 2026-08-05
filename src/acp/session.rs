@@ -19,8 +19,9 @@ use crate::acp::{AcpRunError, FileSystemHost, OneShotAcpOutcome, TerminalHost};
 use crate::process::ProcessTreeOwner;
 use crate::runtime::SchedulerPermit;
 use crate::{
-    ArtifactDigest, ArtifactProbe, DigestAlgorithm, FailureCode, IdentityProbe, ObservedProvider,
-    OutputReceipt, PermissionEvent, PermissionPolicy, ProviderDriver, ProviderIdentity,
+    ArtifactProbe, AssertionResult, FailureCode, IdentityProbe, ObservedArtifactFile,
+    ObservedProvider, OutputReceipt, PermissionEvent, PermissionPolicy, ProbeObservation,
+    ProviderAssertions, ProviderDriver, ProviderExecutionIdentity, ProviderImplementationInfo,
     RunEventKind, RunFailure, RunHandle, RunStage, SessionStamp, ToolEvent,
 };
 
@@ -47,9 +48,10 @@ pub(crate) enum AcpSessionEvent {
     Ready {
         stamp: SessionStamp,
         capabilities: serde_json::Value,
+        identity: ProviderExecutionIdentity,
     },
-    Resolved {
-        provider_lock: crate::ResolvedProviderLock,
+    IdentityObserved {
+        identity: ProviderExecutionIdentity,
     },
     RunEvent {
         run: RunHandle,
@@ -92,10 +94,7 @@ pub(crate) struct AcpSessionSetup {
     pub driver: ProviderDriver,
     pub cwd: std::path::PathBuf,
     pub permission_policy: PermissionPolicy,
-    pub version_policy: crate::VersionPolicy,
-    pub catalog_entry: Option<String>,
-    pub allow_unverified_mutations: bool,
-    pub catalog: Arc<crate::VerifiedCatalog>,
+    pub assertions: ProviderAssertions,
     pub initial_run: RunHandle,
     pub initial_permit: SchedulerPermit,
 }
@@ -109,10 +108,7 @@ pub(crate) async fn run_persistent_session(
         driver: mut manifest,
         cwd,
         permission_policy,
-        version_policy,
-        catalog_entry,
-        allow_unverified_mutations,
-        catalog,
+        assertions,
         initial_run,
         initial_permit,
     } = setup;
@@ -131,7 +127,38 @@ pub(crate) async fn run_persistent_session(
             duration: provider_probe_started.elapsed(),
         })
         .await;
-    if let Err(error) = observed.verify_qualified_files() {
+    let assertion_result = observed.assertion_result(&assertions);
+    let mut execution_identity = ProviderExecutionIdentity {
+        provider: manifest.id,
+        driver_id: manifest.driver_id.clone(),
+        driver_revision: manifest.driver_revision,
+        target: crate::host_target().into(),
+        executable_path: observed.executable.clone(),
+        launch_sha256: observed.launch_sha256.clone(),
+        observed_version: observed.version.clone(),
+        observed_components: observed.components.clone(),
+        acp_protocol_version: None,
+        acp_agent_info: None,
+        capability_digest: None,
+        assertion_result: assertion_result.clone(),
+    };
+    let _ = events
+        .send(AcpSessionEvent::IdentityObserved {
+            identity: execution_identity.clone(),
+        })
+        .await;
+    if let AssertionResult::Failed { reasons } = assertion_result {
+        let _ = events
+            .send(AcpSessionEvent::Exited(Some(RunFailure {
+                code: FailureCode::ProviderAssertionFailed,
+                stage: RunStage::ProviderStarting,
+                retryable: false,
+                message: reasons.join("; "),
+            })))
+            .await;
+        return;
+    }
+    if let Err(error) = observed.verify_unchanged(&assertions) {
         let _ = events
             .send(AcpSessionEvent::Exited(Some(RunFailure {
                 code: FailureCode::ProviderArtifactChanged,
@@ -143,48 +170,6 @@ pub(crate) async fn run_persistent_session(
         return;
     }
     manifest.command = observed.executable.clone();
-    let agentmux_version = semver::Version::parse(env!("CARGO_PKG_VERSION"))
-        .expect("Cargo package version must be valid semver");
-    let provider_lock = match crate::resolve_provider(
-        &catalog,
-        &crate::ResolutionRequest {
-            driver: &manifest,
-            observed: &observed,
-            target: crate::host_target(),
-            policy: version_policy,
-            exact_entry: catalog_entry.as_deref(),
-            agentmux_version: &agentmux_version,
-            now: time::OffsetDateTime::now_utc(),
-        },
-    ) {
-        Ok(provider_lock) => provider_lock,
-        Err(error) => {
-            let _ = events
-                .send(AcpSessionEvent::Exited(Some(resolution_failure(error))))
-                .await;
-            return;
-        }
-    };
-    if provider_lock.compatibility == crate::CompatibilityLevel::Experimental
-        && permission_policy == PermissionPolicy::AllowAll
-        && !allow_unverified_mutations
-    {
-        let _ = events
-            .send(AcpSessionEvent::Exited(Some(RunFailure {
-                code: FailureCode::UnverifiedMutationDenied,
-                stage: RunStage::ProviderStarting,
-                retryable: false,
-                message: "experimental provider mutations require --allow-unverified-mutations"
-                    .into(),
-            })))
-            .await;
-        return;
-    }
-    let _ = events
-        .send(AcpSessionEvent::Resolved {
-            provider_lock: provider_lock.clone(),
-        })
-        .await;
     let turn = Arc::new(Mutex::new(TurnState::default()));
     let notification_turn = turn.clone();
     let notification_events = events.clone();
@@ -229,9 +214,14 @@ pub(crate) async fn run_persistent_session(
     let release_terminal = terminal.clone();
     let cancel_terminals = terminal.clone();
     let startup_timeout = manifest.startup_timeout;
-    let profile_fingerprint = provider_lock.canonical_digest();
+    let profile_fingerprint = execution_identity.launch_fingerprint(
+        &manifest.args,
+        &manifest.fixed_env,
+        permission_policy,
+    );
     let preferred_auth_method = manifest.preferred_auth_method.clone();
-    if let Err(error) = observed.verify_qualified_files() {
+    let required_capabilities = manifest.required_capabilities.clone();
+    if let Err(error) = observed.verify_unchanged(&assertions) {
         let _ = events
             .send(AcpSessionEvent::Exited(Some(RunFailure {
                 code: FailureCode::ProviderArtifactChanged,
@@ -480,6 +470,17 @@ pub(crate) async fn run_persistent_session(
                 return Err(agent_client_protocol::Error::internal_error()
                     .data("provider selected a non-v1 protocol"));
             }
+            let capabilities = serde_json::to_value(&initialize.agent_capabilities)
+                .unwrap_or(serde_json::Value::Null);
+            ensure_required_capabilities(&capabilities, &required_capabilities).map_err(|message| {
+                agent_client_protocol::Error::internal_error().data(message)
+            })?;
+            let agent_info = initialize.agent_info.map(|info| ProviderImplementationInfo {
+                name: info.name,
+                title: info.title,
+                version: info.version,
+            });
+            let capability_digest = capability_digest(&capabilities);
             let auth_method = match preferred_auth_method.as_deref() {
                 Some(preferred) => {
                     set_stage(
@@ -551,8 +552,9 @@ pub(crate) async fn run_persistent_session(
                 })
                 .await;
             let session_id = session.session_id;
-            let capabilities = serde_json::to_value(&initialize.agent_capabilities)
-                .unwrap_or(serde_json::Value::Null);
+            execution_identity.acp_protocol_version = Some(1);
+            execution_identity.acp_agent_info = agent_info;
+            execution_identity.capability_digest = Some(capability_digest);
             let _ = callback_events
                 .send(AcpSessionEvent::Ready {
                     stamp: SessionStamp {
@@ -562,6 +564,7 @@ pub(crate) async fn run_persistent_session(
                         provider_profile_fingerprint: profile_fingerprint,
                     },
                     capabilities,
+                    identity: execution_identity,
                 })
                 .await;
 
@@ -704,30 +707,192 @@ pub(crate) async fn run_persistent_session(
 }
 
 pub async fn observe_provider(
-    manifest: &ProviderDriver,
+    driver: &ProviderDriver,
 ) -> std::result::Result<ObservedProvider, RunFailure> {
-    let mut command = tokio::process::Command::new(&manifest.command);
-    command.args(manifest.identity_probe.args()).env_clear();
-    for name in &manifest.allowed_env {
+    let executable = resolve_executable(&driver.command, &driver.allowed_env)
+        .map_err(|error| observation_failure(error.to_string()))?;
+    let (launch_sha256, launch_identity) = sha256_file(executable.clone()).await?;
+    let version = probe_identity(driver, &executable).await;
+    let mut components = std::collections::BTreeMap::new();
+    let mut supplementary_files = Vec::new();
+
+    let ArtifactProbe::LaunchExecutableSha256 { package_metadata } = &driver.artifact_probe;
+    if let Some(package_probe) = package_metadata {
+        let package_path = executable
+            .parent()
+            .and_then(std::path::Path::parent)
+            .map(|directory| directory.join("package.json"));
+        match package_path {
+            Some(path) => match read_observed_file(path.clone()).await {
+                Ok((bytes, identity)) => {
+                    supplementary_files.push(ObservedArtifactFile {
+                        subject: "package_metadata".into(),
+                        path,
+                        identity,
+                        executable_required: false,
+                    });
+                    match serde_json::from_slice::<serde_json::Value>(&bytes) {
+                        Ok(package)
+                            if package["name"].as_str()
+                                == Some(package_probe.package_name.as_str()) =>
+                        {
+                            for (component, dependency) in &package_probe.component_dependencies {
+                                let observation = package["dependencies"][dependency]
+                                    .as_str()
+                                    .map(|declared| {
+                                        declared
+                                            .trim_start_matches(['^', '~', '=', '>', '<', ' '])
+                                            .to_owned()
+                                    })
+                                    .filter(|value| !value.is_empty())
+                                    .map(ProbeObservation::Observed)
+                                    .unwrap_or_else(|| {
+                                        ProbeObservation::Unavailable(format!(
+                                            "package metadata has no dependency {dependency:?}"
+                                        ))
+                                    });
+                                components.insert(component.clone(), observation);
+                            }
+                        }
+                        Ok(_) => mark_components(
+                            &mut components,
+                            package_probe,
+                            ProbeObservation::Malformed(
+                                "package metadata identifies a different package".into(),
+                            ),
+                        ),
+                        Err(error) => mark_components(
+                            &mut components,
+                            package_probe,
+                            ProbeObservation::Malformed(error.to_string()),
+                        ),
+                    }
+                }
+                Err(error) => mark_components(
+                    &mut components,
+                    package_probe,
+                    ProbeObservation::Unavailable(error.message),
+                ),
+            },
+            None => mark_components(
+                &mut components,
+                package_probe,
+                ProbeObservation::Unavailable("package metadata path is unavailable".into()),
+            ),
+        }
+    }
+
+    Ok(ObservedProvider {
+        executable: executable.clone(),
+        launch_sha256,
+        version,
+        components,
+        launch_file: ObservedArtifactFile {
+            subject: "executable".into(),
+            path: executable,
+            identity: launch_identity,
+            executable_required: true,
+        },
+        supplementary_files,
+    })
+}
+
+fn mark_components(
+    output: &mut std::collections::BTreeMap<String, ProbeObservation<String>>,
+    probe: &crate::PackageMetadataProbe,
+    observation: ProbeObservation<String>,
+) {
+    for component in probe.component_dependencies.keys() {
+        output.insert(component.clone(), observation.clone());
+    }
+}
+
+async fn probe_identity(
+    driver: &ProviderDriver,
+    executable: &std::path::Path,
+) -> ProbeObservation<String> {
+    use std::process::Stdio;
+
+    let mut command = tokio::process::Command::new(executable);
+    command
+        .args(driver.identity_probe.args())
+        .env_clear()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for name in &driver.allowed_env {
         if let Some(value) = std::env::var_os(name) {
             command.env(name, value);
         }
     }
-    for (name, value) in &manifest.fixed_env {
+    for (name, value) in &driver.fixed_env {
         command.env(name, value);
     }
-    let output = command
-        .output()
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => return ProbeObservation::Unavailable(error.to_string()),
+    };
+    let mut stdout_task = tokio::spawn(drain_bounded(
+        child.stdout.take().expect("probe stdout is piped"),
+        64 * 1024,
+    ));
+    let mut stderr_task = tokio::spawn(drain_bounded(
+        child.stderr.take().expect("probe stderr is piped"),
+        16 * 1024,
+    ));
+    let timeout = driver.startup_timeout.min(Duration::from_secs(5));
+    let status = match tokio::time::timeout(timeout, child.wait()).await {
+        Ok(Ok(status)) => status,
+        Ok(Err(error)) => return ProbeObservation::Unavailable(error.to_string()),
+        Err(_) => {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+            stdout_task.abort();
+            stderr_task.abort();
+            return ProbeObservation::Unavailable("identity probe timed out".into());
+        }
+    };
+    let stdout = match tokio::time::timeout(Duration::from_secs(1), &mut stdout_task).await {
+        Ok(Ok(Ok(output))) => output,
+        Ok(Ok(Err(error))) => return ProbeObservation::Unavailable(error.to_string()),
+        Ok(Err(error)) => return ProbeObservation::Unavailable(error.to_string()),
+        Err(_) => {
+            stdout_task.abort();
+            return ProbeObservation::Unavailable("identity probe stdout did not close".into());
+        }
+    };
+    if tokio::time::timeout(Duration::from_secs(1), &mut stderr_task)
         .await
-        .map_err(|error| probe_failure(error.to_string()))?;
-    let text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    if !output.status.success() {
-        return Err(probe_failure(format!(
-            "provider identity probe exited with {}",
-            output.status
-        )));
+        .is_err()
+    {
+        stderr_task.abort();
     }
-    let normalized_version = match &manifest.identity_probe {
+    if !status.success() {
+        return ProbeObservation::Unavailable(format!("identity probe exited with {status}"));
+    }
+    let text = String::from_utf8_lossy(&stdout).trim().to_owned();
+    normalize_probe_output(&driver.identity_probe, text)
+}
+
+async fn drain_bounded<R>(mut reader: R, limit: usize) -> std::io::Result<Vec<u8>>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    use tokio::io::AsyncReadExt as _;
+    let mut output = Vec::new();
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = reader.read(&mut buffer).await?;
+        if read == 0 {
+            break;
+        }
+        let remaining = limit.saturating_sub(output.len());
+        output.extend_from_slice(&buffer[..read.min(remaining)]);
+    }
+    Ok(output)
+}
+
+fn normalize_probe_output(probe: &IdentityProbe, text: String) -> ProbeObservation<String> {
+    match probe {
         IdentityProbe::Semver { .. } => text
             .split_whitespace()
             .find_map(|word| {
@@ -739,111 +904,25 @@ pub async fn observe_provider(
                 }))
                 .ok()
             })
-            .map(|version| version.to_string())
-            .ok_or_else(|| probe_failure(format!("provider output {text:?} contains no semver")))?,
+            .map(|version| ProbeObservation::Observed(version.to_string()))
+            .unwrap_or_else(|| {
+                ProbeObservation::Malformed(format!("output contains no version: {text:?}"))
+            }),
         IdentityProbe::ExactOutput { strip_prefix, .. } => match strip_prefix {
             Some(prefix) => text
                 .strip_prefix(prefix)
-                .filter(|value| !value.trim().is_empty())
                 .map(str::trim)
-                .map(str::to_owned)
-                .ok_or_else(|| {
-                    probe_failure(format!(
-                        "provider output {text:?} does not start with {prefix:?}"
+                .filter(|value| !value.is_empty())
+                .map(|value| ProbeObservation::Observed(value.to_owned()))
+                .unwrap_or_else(|| {
+                    ProbeObservation::Malformed(format!(
+                        "output {text:?} does not start with {prefix:?}"
                     ))
-                })?,
-            None if text.is_empty() => {
-                return Err(probe_failure("provider identity output is empty"));
-            }
-            None => text.clone(),
+                }),
+            None if text.is_empty() => ProbeObservation::Malformed("output is empty".into()),
+            None => ProbeObservation::Observed(text),
         },
-    };
-    let executable = resolve_executable(&manifest.command, &manifest.allowed_env)
-        .map_err(|error| probe_failure(error.to_string()))?;
-    let (artifacts, components, executable_identity, qualified_files) = match &manifest
-        .artifact_probe
-    {
-        ArtifactProbe::LaunchExecutableSha256 { package_metadata } => {
-            let (executable_digest, executable_identity) = sha256_file(executable.clone()).await?;
-            let mut artifacts = vec![ArtifactDigest {
-                subject: "executable".into(),
-                algorithm: DigestAlgorithm::Sha256,
-                digest: executable_digest,
-            }];
-            let mut qualified_files = vec![crate::QualifiedArtifactFile {
-                subject: "executable".into(),
-                path: executable.clone(),
-                identity: executable_identity.clone(),
-                executable_required: true,
-            }];
-            let mut components = std::collections::BTreeMap::new();
-            if let Some(probe) = package_metadata {
-                let package_path = executable
-                    .parent()
-                    .and_then(std::path::Path::parent)
-                    .map(|directory| directory.join("package.json"))
-                    .ok_or_else(|| probe_failure("adapter package metadata path is unavailable"))?;
-                if package_path.is_file() {
-                    let (package_bytes, package_digest, package_identity) =
-                        read_qualified_file(package_path.clone()).await?;
-                    let package: serde_json::Value = serde_json::from_slice(&package_bytes)
-                        .map_err(|error| probe_failure(error.to_string()))?;
-                    if package["name"].as_str() != Some(&probe.package_name) {
-                        return Err(probe_failure(format!(
-                            "adapter package metadata does not identify {:?}",
-                            probe.package_name
-                        )));
-                    }
-                    if package["version"].as_str() != Some(normalized_version.as_str()) {
-                        return Err(probe_failure(
-                            "adapter package metadata version differs from identity probe",
-                        ));
-                    }
-                    for (component, dependency) in &probe.component_dependencies {
-                        let declared = package["dependencies"][dependency].as_str().ok_or_else(
-                            || {
-                                probe_failure(format!(
-                                    "adapter package metadata is missing dependency {dependency:?}"
-                                ))
-                            },
-                        )?;
-                        let normalized = declared
-                            .trim_start_matches(['^', '~', '=', '>', '<', ' '])
-                            .to_owned();
-                        if normalized.is_empty() {
-                            return Err(probe_failure(format!(
-                                "adapter dependency {dependency:?} has no version"
-                            )));
-                        }
-                        components.insert(component.clone(), normalized);
-                    }
-                    artifacts.push(ArtifactDigest {
-                        subject: "package_metadata".into(),
-                        algorithm: DigestAlgorithm::Sha256,
-                        digest: package_digest,
-                    });
-                    qualified_files.push(crate::QualifiedArtifactFile {
-                        subject: "package_metadata".into(),
-                        path: package_path,
-                        identity: package_identity,
-                        executable_required: false,
-                    });
-                }
-            }
-            (artifacts, components, executable_identity, qualified_files)
-        }
-    };
-    Ok(ObservedProvider {
-        identity: ProviderIdentity {
-            display_version: normalized_version.clone(),
-            normalized_version,
-            components,
-        },
-        artifacts,
-        executable,
-        executable_identity,
-        qualified_files,
-    })
+    }
 }
 
 fn resolve_executable(
@@ -864,7 +943,7 @@ fn resolve_executable(
     })?;
     for directory in std::env::split_paths(&path) {
         let candidate = directory.join(command);
-        if candidate.is_file() {
+        if candidate.exists() {
             return std::fs::canonicalize(candidate);
         }
     }
@@ -881,8 +960,8 @@ async fn sha256_file(
         use sha2::{Digest as _, Sha256};
         use std::io::Read as _;
 
+        let identity = crate::ExecutableFileIdentity::from_artifact_path(&path, true)?;
         let mut file = std::fs::File::open(&path)?;
-        let identity = crate::ExecutableFileIdentity::from_path(&path)?;
         let mut hasher = Sha256::new();
         let mut buffer = [0_u8; 64 * 1024];
         loop {
@@ -892,35 +971,47 @@ async fn sha256_file(
             }
             hasher.update(&buffer[..read]);
         }
-        identity.verify_path(&path)?;
+        identity.verify_artifact_path(&path, true)?;
         Ok::<_, std::io::Error>((format!("{:x}", hasher.finalize()), identity))
     })
     .await
-    .map_err(|error| probe_failure(error.to_string()))?
-    .map_err(|error| probe_failure(error.to_string()))
+    .map_err(|error| observation_failure(error.to_string()))?
+    .map_err(|error| observation_failure(error.to_string()))
 }
 
-async fn read_qualified_file(
+async fn read_observed_file(
     path: std::path::PathBuf,
-) -> std::result::Result<(Vec<u8>, String, crate::ExecutableFileIdentity), RunFailure> {
+) -> std::result::Result<(Vec<u8>, crate::ExecutableFileIdentity), RunFailure> {
     tokio::task::spawn_blocking(move || {
-        use sha2::{Digest as _, Sha256};
         use std::io::Read as _;
 
-        let mut file = std::fs::File::open(&path)?;
+        const MAX_PACKAGE_METADATA_BYTES: u64 = 1024 * 1024;
         let identity = crate::ExecutableFileIdentity::from_artifact_path(&path, false)?;
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)?;
+        if identity.size > MAX_PACKAGE_METADATA_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "package metadata exceeds the 1 MiB observation limit",
+            ));
+        }
+        let mut bytes = Vec::with_capacity(identity.size as usize);
+        std::fs::File::open(&path)?
+            .take(MAX_PACKAGE_METADATA_BYTES + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_PACKAGE_METADATA_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "package metadata exceeds the 1 MiB observation limit",
+            ));
+        }
         identity.verify_artifact_path(&path, false)?;
-        let digest = format!("{:x}", Sha256::digest(&bytes));
-        Ok::<_, std::io::Error>((bytes, digest, identity))
+        Ok::<_, std::io::Error>((bytes, identity))
     })
     .await
-    .map_err(|error| probe_failure(error.to_string()))?
-    .map_err(|error| probe_failure(error.to_string()))
+    .map_err(|error| observation_failure(error.to_string()))?
+    .map_err(|error| observation_failure(error.to_string()))
 }
 
-fn probe_failure(message: impl Into<String>) -> RunFailure {
+fn observation_failure(message: impl Into<String>) -> RunFailure {
     RunFailure {
         code: FailureCode::ProviderSpawnFailed,
         stage: RunStage::ProviderStarting,
@@ -929,27 +1020,30 @@ fn probe_failure(message: impl Into<String>) -> RunFailure {
     }
 }
 
-fn resolution_failure(error: crate::CatalogError) -> RunFailure {
-    let message = error.to_string();
-    let code = match &error {
-        crate::CatalogError::Expired(_)
-        | crate::CatalogError::Signature(_)
-        | crate::CatalogError::Cache(_)
-        | crate::CatalogError::Parse(_)
-        | crate::CatalogError::UnsupportedSchema(_)
-        | crate::CatalogError::Invalid(_)
-        | crate::CatalogError::Rollback { .. } => FailureCode::CatalogUnavailable,
-        crate::CatalogError::Resolution(detail) if detail.contains("blocked") => {
-            FailureCode::ProviderBlocked
+fn capability_digest(capabilities: &serde_json::Value) -> String {
+    use sha2::{Digest as _, Sha256};
+    let bytes = serde_json::to_vec(capabilities).unwrap_or_default();
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn ensure_required_capabilities(
+    capabilities: &serde_json::Value,
+    required: &crate::CapabilitySet,
+) -> std::result::Result<(), String> {
+    for capability in &required.0 {
+        let mut value = capabilities;
+        for segment in capability.split('.') {
+            value = value.get(segment).ok_or_else(|| {
+                format!("provider does not advertise required capability {capability}")
+            })?;
         }
-        crate::CatalogError::Resolution(_) => FailureCode::ProviderNotVerified,
-    };
-    RunFailure {
-        code,
-        stage: RunStage::ProviderStarting,
-        retryable: false,
-        message,
+        if value.is_null() || value.as_bool() == Some(false) {
+            return Err(format!(
+                "provider does not advertise required capability {capability}"
+            ));
+        }
     }
+    Ok(())
 }
 
 async fn set_stage(
@@ -1022,8 +1116,33 @@ mod tests {
     use super::*;
     use crate::runtime::Scheduler;
     use crate::{
-        AcpVersionPolicy, ArtifactProbe, CapabilitySet, DriverId, IdentityProbe, ProviderId,
+        AcpProtocolPolicy, ArtifactProbe, CapabilitySet, DriverId, IdentityProbe, ProviderId,
     };
+
+    #[test]
+    fn required_capabilities_are_checked_from_initialize_data() {
+        let advertised = serde_json::json!({
+            "loadSession": true,
+            "promptCapabilities": { "image": false }
+        });
+        assert!(
+            ensure_required_capabilities(&advertised, &CapabilitySet(vec!["loadSession".into()]))
+                .is_ok()
+        );
+        assert!(
+            ensure_required_capabilities(
+                &advertised,
+                &CapabilitySet(vec!["promptCapabilities.image".into()])
+            )
+            .unwrap_err()
+            .contains("promptCapabilities.image")
+        );
+        assert!(
+            ensure_required_capabilities(&advertised, &CapabilitySet(vec!["terminal".into()]))
+                .unwrap_err()
+                .contains("terminal")
+        );
+    }
 
     #[tokio::test]
     async fn version_probe_receives_only_allowlisted_environment_variables() {
@@ -1044,7 +1163,7 @@ mod tests {
             artifact_probe: ArtifactProbe::LaunchExecutableSha256 {
                 package_metadata: None,
             },
-            protocol: AcpVersionPolicy::StableV1,
+            protocol: AcpProtocolPolicy::StableV1,
             required_capabilities: CapabilitySet(Vec::new()),
             allowed_env: vec!["PATH".into(), "AGENTMUX_FIXED".into()],
             fixed_env: [("AGENTMUX_FIXED".into(), "fixed".into())]
@@ -1056,33 +1175,9 @@ mod tests {
 
         let observed = observe_provider(&manifest).await.unwrap();
         assert_eq!(
-            observed.identity.normalized_version,
-            format!("{}:unset:fixed", std::env::var("PATH").unwrap())
+            observed.version,
+            ProbeObservation::Observed(format!("{}:unset:fixed", std::env::var("PATH").unwrap()))
         );
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn qualified_file_identity_detects_launch_time_replacement() {
-        use std::os::unix::fs::PermissionsExt as _;
-
-        let fixture = std::env::temp_dir().join(format!(
-            "agentmux-qualified-artifact-replacement-{}",
-            Uuid::now_v7()
-        ));
-        std::fs::hard_link(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("tests/fixtures/mock_acp_agent.py"),
-            &fixture,
-        )
-        .unwrap();
-        let driver = crate::grok_driver(Some(fixture.clone()));
-        let observed = observe_provider(&driver).await.unwrap();
-        std::fs::remove_file(&fixture).unwrap();
-        std::fs::write(&fixture, "#!/bin/sh\necho 0.2.118\n").unwrap();
-        std::fs::set_permissions(&fixture, std::fs::Permissions::from_mode(0o700)).unwrap();
-        assert!(observed.verify_qualified_files().is_err());
-        std::fs::remove_file(fixture).unwrap();
     }
 
     #[cfg(unix)]
@@ -1102,13 +1197,14 @@ mod tests {
             driver_revision: 1,
             command: fixture.clone(),
             args: Vec::new(),
-            identity_probe: IdentityProbe::Semver {
+            identity_probe: IdentityProbe::ExactOutput {
                 args: vec!["--version".into()],
+                strip_prefix: None,
             },
             artifact_probe: ArtifactProbe::LaunchExecutableSha256 {
                 package_metadata: None,
             },
-            protocol: AcpVersionPolicy::StableV1,
+            protocol: AcpProtocolPolicy::StableV1,
             required_capabilities: CapabilitySet(Vec::new()),
             allowed_env: vec!["PATH".into()],
             fixed_env: Default::default(),
@@ -1136,10 +1232,7 @@ mod tests {
                 driver: manifest,
                 cwd: std::path::Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf(),
                 permission_policy: PermissionPolicy::Deny,
-                version_policy: crate::VersionPolicy::Experimental,
-                catalog_entry: None,
-                allow_unverified_mutations: false,
-                catalog: Arc::new(crate::bootstrap_catalog().unwrap()),
+                assertions: ProviderAssertions::default(),
                 initial_run: run,
                 initial_permit: permit,
             },

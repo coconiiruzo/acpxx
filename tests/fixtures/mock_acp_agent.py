@@ -21,7 +21,29 @@ def main():
     args = parser.parse_args()
     executable_name = os.path.basename(sys.argv[0])
     if args.version or "version" in args.command:
-        if "cursor" in executable_name:
+        if "probe_fail" in executable_name:
+            print("scripted version probe failure", file=sys.stderr)
+            return 37
+        if "probe_timeout" in executable_name:
+            time.sleep(7)
+            return 0
+        if "probe_gate" in executable_name:
+            ready = sys.argv[0] + ".probe-ready"
+            proceed = sys.argv[0] + ".probe-continue"
+            with open(ready, "w", encoding="utf-8") as marker:
+                marker.write("ready")
+            deadline = time.monotonic() + 10
+            while not os.path.exists(proceed):
+                if time.monotonic() >= deadline:
+                    return 38
+                time.sleep(0.01)
+        if "future_version" in executable_name:
+            print("grok 9999.0.0")
+        elif "malformed_version" in executable_name:
+            print("version-is-not-semver")
+        elif "nonsemver" in executable_name:
+            print("nightly-channel-future-build")
+        elif "cursor" in executable_name:
             print("2026.07.20-8cc9c0b")
         elif "codex" in executable_name:
             print("@agentclientprotocol/codex-acp 1.1.9")
@@ -30,6 +52,10 @@ def main():
         else:
             print("grok 0.2.118")
         return 0
+
+    if executable_name.startswith("agentmux-mock-"):
+        with open(sys.argv[0] + ".launched", "w", encoding="utf-8") as marker:
+            marker.write(str(os.getpid()))
 
     session_id = "mock-session-1"
     session_cwd = None
@@ -59,13 +85,19 @@ def main():
                     }
                 ]
             )
+            protocol_version = 999 if "unsupported_protocol" in executable_name else 1
+            capabilities = (
+                {"loadSession": True}
+                if "with_capability" in executable_name
+                else {}
+            )
             send(
                 {
                     "jsonrpc": "2.0",
                     "id": request_id,
                     "result": {
-                        "protocolVersion": 1,
-                        "agentCapabilities": {},
+                        "protocolVersion": protocol_version,
+                        "agentCapabilities": capabilities,
                         "authMethods": auth_methods,
                         "agentInfo": {"name": "mock-acp", "version": "0.1.0"},
                     },

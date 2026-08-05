@@ -1,179 +1,119 @@
 # acpxx / agentmux
 
-`agentmux` is the target product name for this repository's handle-first local
-broker for coding agents that speak the
-[Agent Client Protocol (ACP)](https://agentclientprotocol.com/).
+`agentmux` is a handle-first local broker that operates Codex, Claude, Grok, and Cursor through
+stable ACP v1. The Rust package is named `acpxx`; the distributed executable is `agentmux`.
 
-The v2 runtime is one closed control API for exactly **Codex, Claude, Grok, and
-Cursor**. The Rust package still uses the repository name `acpxx`; its single
-distributed executable is named `agentmux`. Provider execution uses stable ACP
-v1. A signed Compatibility Catalog authorizes exact observed identities and
-artifact digests independently from the agentmux binary release.
+Version 2 removes central provider-version authorization. A provider version is not rejected merely
+because agentmux has never seen it. Runtime admission is based on the built-in `ProviderDriver`,
+local executable safety, optional exact user assertions, ACP protocol negotiation, required
+capabilities, and the configured permission policy.
 
-> Status: v2.0.0. Provider compatibility is Catalog-driven, immutable per
-> Agent, persisted in receipts, and explicitly updateable without a binary
-> release. The four-provider scope and stable ACP v1 wire protocol are unchanged.
-
-The current signed sequence and recommended exact identities are generated in
-[Provider compatibility](PROVIDER_COMPATIBILITY.md). A matching version string
-without the qualified artifact digest is rejected.
-
-## Why
-
-Coding-agent integrations tend to leak provider process IDs, session IDs, CLI
-protocols, or workspace paths into their public APIs. `acpxx` instead exposes
-opaque logical handles:
-
-```rust
-pub struct AgentHandle {
-    pub agent_id: AgentId,
-}
-
-pub struct RunHandle {
-    pub agent_id: AgentId,
-    pub run_id: RunId,
-}
-```
-
-An `AgentId` identifies a logical worker. A `RunId` identifies one execution.
-Names, paths, working directories, and provider names are metadata, never
-identity.
-
-## Current vertical slice
+## Product shape
 
 ```text
-spawn
-  -> queued Run + handles returned
-  -> Agent actor acquires capacity
-  -> Driver identity and artifact probes
-  -> deny-first signed Catalog resolution
-  -> immutable ResolvedProviderLock
-  -> grok --no-auto-update agent stdio
-  -> ACP initialize (v1)
-  -> session/new
-  -> session/prompt + streamed session/update collection
-  -> persistent same-session follow-up
-  -> interrupt/deadline escalation
-  -> terminal receipt published to wait_run
+CLI / automation
+  -> Unix Domain Socket (IPC v2)
+  -> local broker + Agent/Run actors
+  -> official ACP Rust SDK
+  -> owned provider process tree
+  -> Grok | Cursor | Codex adapter | Claude adapter
 ```
 
-The implementation uses `tokio::sync::watch`; `wait_run` does not poll. A wait
-timeout only stops the caller from waiting and does not cancel the run.
+The public control operations are `spawn`, `send`, `followup`, `interrupt`, and `list`.
+Observation uses `events`, `wait_run`, `wait_any`, and `wait_all` without polling.
 
-### Operation matrix
+- `AgentId` is a logical worker; `RunId` is one execution. IDs are UUIDv7 and are never derived
+  from a path, name, provider, or process.
+- `send` only appends to the Agent mailbox. It creates no Run and does not steer an active turn.
+- `followup` creates the next Run on the same live ACP process, transport, and session.
+- continuity loss never creates a replacement session or replays a transcript.
+- Run state is exactly `queued`, `running`, `succeeded`, `failed`, or `interrupted`.
 
-| Operation | Contract | v2 implementation |
-| --- | --- | --- |
-| `spawn` | Create Agent, process/session, and initial Run | yes, persistent Grok |
-| `send` | Queue mailbox message without starting a Run | yes, bounded mailbox |
-| `followup` | Start a new Run on the same ACP session | yes, strict session stamp |
-| `interrupt` | Cancel one Run | yes, cancel then owned-process escalation |
-| `list` | Snapshot Agents, Runs, and provider expectations | yes |
-| `wait_run` | Wait for one terminal receipt | yes |
-| `events` | Observe a Run's ordered event stream | yes, bounded stream |
-| `wait_any` / `wait_all` | Aggregate non-polling waits | yes |
+## Runtime compatibility
 
-## Run it
+```text
+resolve/canonicalize executable
+  -> regular-file, owner, mode, executable checks
+  -> SHA-256 + file identity observation
+  -> best-effort version/component probes
+  -> optional exact local assertions
+  -> file-identity recheck immediately before spawn
+  -> ACP v1 initialize + capability checks
+  -> session/new + prompt
+```
 
-Prerequisites:
+Version probe failure or an unfamiliar/non-semver version is diagnostic information when no
+assertion is configured. The launch artifact safety checks, an assertion mismatch, an artifact
+replacement, ACP negotiation failure, or a missing required capability are hard failures.
+`RunReceipt.provider_identity` records what actually ran without claiming trust or support.
 
-- Rust 1.96 or newer
-- At least one qualified, authenticated provider executable listed in
-  [Provider compatibility](PROVIDER_COMPATIBILITY.md)
+Past real-provider measurements are in [TESTED_PROVIDERS.md](TESTED_PROVIDERS.md). That document is
+reference data only and is never read by the runtime.
+
+## Install and run
+
+Requirements are macOS arm64, Rust 1.96+ for source builds, and at least one separately installed
+and authenticated provider or ACP adapter. agentmux never installs or updates one.
 
 ```bash
-cargo build
-target/debug/agentmux serve \
-  --provider-limit grok=2 \
-  --provider-limit codex=4
-target/debug/agentmux spawn --provider grok --cwd . \
-  "Reply with a one-line summary of this repository"
-target/debug/agentmux spawn --profile grok-default --cwd . \
-  "Run the qualified Grok profile"
-target/debug/agentmux wait RUN_UUID
+cargo build --locked
+chmod 600 ~/.config/agentmux/providers.toml
+target/debug/agentmux config migrate --check
 target/debug/agentmux doctor --json
-target/debug/agentmux compatibility status --json
-target/debug/agentmux provider verify grok-default --json
-target/release/agentmux benchmark --enforce --json
+target/debug/agentmux serve --provider-limit codex=2
+target/debug/agentmux spawn --profile codex-default --cwd /repo \
+  "Investigate the failing tests"
+target/debug/agentmux wait RUN_UUID
+target/debug/agentmux followup AGENT_UUID --after RUN_UUID \
+  "Run the remaining tests"
 ```
 
-Mutation permissions are denied by default. To explicitly allow every provider
-permission request:
+Inspect a profile without creating an ACP session:
 
 ```bash
-target/debug/agentmux spawn --permissions allow-all "Create hello.txt"
+agentmux provider inspect codex-default --json
 ```
 
-If a profile uses `version_policy = "experimental"`, mutation-capable
-permissions additionally require `--allow-unverified-mutations`. This is a
-deliberate double opt-in.
+Provider configuration uses final schema v2. Assertions are optional and exact:
 
-Provider profiles are loaded from `~/.config/agentmux/providers.toml` by
-default. Config schema v2 removes user-authored versions, checksums, command
-arguments, and self-attested qualification fields. Migrate v1 explicitly with
-`agentmux config migrate --check` followed by `--write`; a timestamped backup is
-created before an atomic mode-`0600` replacement. Only each Provider Driver's
-allowlisted environment variables cross the
-supervisor boundary.
+```toml
+schema_version = 2
 
-`spawn` prints the Agent/Run handles. `wait` prints a JSON `RunReceipt`
-containing terminal state, failure taxonomy, output, timings, and cleanup
-disposition.
+[profiles.grok-default]
+provider = "grok"
+executable = "/absolute/path/to/grok"
+permissions = "deny"
 
-## Invariants
+[profiles.grok-default.assertions]
+version = "0.2.118"
+launch_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+```
 
-- IDs are UUIDv7 and never derived from names or paths.
-- Canonical Run states are exactly `queued`, `running`, `succeeded`, `failed`,
-  and `interrupted`.
-- Only `queued -> running -> terminal` transitions are valid.
-- Startup failures are reported through the normal terminal receipt path.
-- stdout belongs exclusively to ACP; provider logs are read from bounded
-  stderr capture in the official SDK.
-- Successful Runs retain their live provider session; broker shutdown and force
-  interrupt wait for the owned process tree to be terminated and reaped.
-- No session replay, provider fallback, CLI output scraping, or automatic
-  adapter installation is permitted.
+Delete the assertions table to allow newer local versions through the normal runtime negotiation
+path. Permission requests are denied by default; `--permissions allow-all` is an explicit policy
+choice and is independent of provider version.
 
-## Protocol and provider compatibility
+## Security and persistence
 
-`acpxx` pins `agent-client-protocol = 2.0.0` without unstable features. Despite
-the crate version, its default schema remains stable protocol v1; protocol v2
-is still behind `unstable_protocol_v2`. See the
-[official Rust SDK](https://github.com/agentclientprotocol/rust-sdk).
+- provider environment names are allowlisted and secret values are redacted;
+- ACP stdout is protocol-only; stderr, events, output, IPC frames, and metadata files are bounded;
+- child and grandchild processes are owned and reaped without process-name searches;
+- SQLite schema v3 stores metadata, terminal receipts, and observed identity only;
+- prompts, assistant output, reasoning, session secrets, and environment values are not persisted;
+- broker restart terminates prior active Runs as `host_restarted` and marks continuity lost.
 
-`serve` and `spawn` never access the network. Only `agentmux compatibility
-update` downloads or imports a complete signed Catalog, applies signature,
-expiry, schema, Driver, and monotonic-sequence checks, installs an immutable
-cache generation, and asks a running IPC v2 daemon to reload it. Existing
-Agents keep their original lock, process, and session.
+## Documentation
 
-## Scope and roadmap
-
-The authoritative roadmap has Phases 0 through 18. It separates the fake ACP
-runtime, host services, owned-process lifecycle, Grok E2E, observation APIs,
-continuity, interruption, aggregate waits, daemon/IPC, conformance, each
-provider integration, persistence, hardening, and release packaging.
-
-Read:
-
-- [Installation](docs/installation.md)
-- [Provider setup and authentication](docs/provider-setup.md)
-- [CLI reference](docs/cli-reference.md)
-- [Rust API](docs/rust-api.md)
-- [Lifecycle semantics](docs/lifecycle-semantics.md)
-- [Troubleshooting](docs/troubleshooting.md)
-- [Upgrade policy](docs/upgrade-policy.md)
-- [Release procedure](docs/release.md)
 - [Product contract](PRODUCT_CONTRACT.md)
-- [v1 non-goals](NON_GOALS.md)
-- [Architecture and phase plan](docs/architecture.ja.md)
-- [Current implementation gap](docs/status.ja.md)
-- [Provider compatibility](PROVIDER_COMPATIBILITY.md)
-- [Provider conformance](CONFORMANCE.md)
-- [Performance qualification](PERFORMANCE.md)
-- [v2 Definition of Done](V2_DEFINITION_OF_DONE.md)
-- [Catalog migration plan](docs/provider-version-catalog-migration-plan.md)
-- [ADR-0001](docs/adr/0001-handle-first-acp-runtime.md)
+- [Architecture](docs/architecture.ja.md)
+- [Provider setup](docs/provider-setup.md)
+- [CLI](docs/cli-reference.md) and [Rust API](docs/rust-api.md)
+- [Conformance](CONFORMANCE.md) and [v2 Definition of Done](V2_DEFINITION_OF_DONE.md)
+- [Installation](docs/installation.md), [troubleshooting](docs/troubleshooting.md),
+  [upgrade](docs/upgrade-policy.md), and [release](docs/release.md)
+- [v2.0.0 release notes](docs/release-notes-v2.0.0.md)
+- [Security](SECURITY.md) and [performance methodology](PERFORMANCE.md)
+- [ADR-0006](docs/adr/0006-runtime-negotiated-provider-compatibility.md)
 
 ## Development
 
@@ -183,10 +123,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets
 ```
 
-The test suite includes a black-box mock ACP process. Authenticated provider
-audits are explicit ignored/manual suites because CI does not receive provider
-credentials. The release gate requires those suites on the qualified environment.
-
-## License
+Authenticated provider and real-process audits are ignored/manual because they use local login
+state and may consume model quota. See [CONFORMANCE.md](CONFORMANCE.md).
 
 Apache-2.0.

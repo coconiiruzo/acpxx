@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use super::cursor::environment_allowlist;
 use super::{
-    AcpVersionPolicy, ArtifactProbe, CapabilitySet, IdentityProbe, PackageMetadataProbe,
+    AcpProtocolPolicy, ArtifactProbe, CapabilitySet, IdentityProbe, PackageMetadataProbe,
     ProviderDriver,
 };
 use crate::{DriverId, ProviderId};
@@ -31,7 +31,7 @@ pub fn claude_driver(adapter: Option<PathBuf>) -> ProviderDriver {
                 .collect(),
             }),
         },
-        protocol: AcpVersionPolicy::StableV1,
+        protocol: AcpProtocolPolicy::StableV1,
         required_capabilities: CapabilitySet(Vec::new()),
         allowed_env: environment_allowlist(&[
             "ANTHROPIC_API_KEY",

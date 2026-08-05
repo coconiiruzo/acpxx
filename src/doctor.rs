@@ -34,52 +34,44 @@ pub async fn inspect(socket: &Path, database: &Path) -> DoctorReport {
 
 pub async fn inspect_with_config(socket: &Path, database: &Path, config: &Path) -> DoctorReport {
     let mut checks = Vec::new();
-    let catalog_store = catalog_store(config);
-    match &catalog_store {
-        Ok(store) => checks.push(catalog_check(store)),
-        Err(error) => checks.push(DoctorCheck {
-            name: "compatibility.catalog".into(),
-            status: DoctorStatus::Fail,
-            message: error.clone(),
-        }),
-    }
-    let catalog = catalog_store
-        .as_ref()
-        .ok()
-        .map(|store| store.snapshot().catalog);
-    let configured = crate::config::ProviderConfig::load(config).ok();
-    if let Some(configured) = &configured {
-        for profile in configured.profiles.keys() {
-            match configured.resolve(profile) {
-                Ok(resolved) => match resolved.provider_spec.driver() {
-                    Ok(driver) => {
-                        let mut check = version_check(&driver, catalog.clone()).await;
-                        check.name = format!("profile.{profile}.compatibility");
-                        checks.push(check);
+    if config.exists() {
+        match crate::config::ProviderConfig::load(config) {
+            Ok(provider_config) => {
+                for name in provider_config.profiles.keys() {
+                    match provider_config.resolve(name) {
+                        Ok(profile) => match profile.provider_spec.driver() {
+                            Ok(driver) => {
+                                checks
+                                    .push(provider_check(name, &driver, &profile.assertions).await);
+                            }
+                            Err(error) => checks.push(DoctorCheck {
+                                name: format!("profile.{name}"),
+                                status: DoctorStatus::Fail,
+                                message: error.to_string(),
+                            }),
+                        },
+                        Err(error) => checks.push(DoctorCheck {
+                            name: format!("profile.{name}"),
+                            status: DoctorStatus::Fail,
+                            message: error.to_string(),
+                        }),
                     }
-                    Err(error) => checks.push(DoctorCheck {
-                        name: format!("profile.{profile}.compatibility"),
-                        status: DoctorStatus::Fail,
-                        message: error.to_string(),
-                    }),
-                },
-                Err(error) => checks.push(DoctorCheck {
-                    name: format!("profile.{profile}.compatibility"),
-                    status: DoctorStatus::Fail,
-                    message: error.to_string(),
-                }),
+                }
             }
+            Err(error) => checks.push(DoctorCheck {
+                name: "config.provider_profiles".into(),
+                status: DoctorStatus::Fail,
+                message: error.to_string(),
+            }),
         }
     } else {
-        for driver in crate::all_provider_drivers() {
-            checks.push(version_check(&driver, catalog.clone()).await);
-        }
+        checks.push(config_check(config));
     }
     for provider in [
-        ProviderId::Codex,
-        ProviderId::Claude,
         ProviderId::Grok,
         ProviderId::Cursor,
+        ProviderId::Codex,
+        ProviderId::Claude,
     ] {
         checks.push(authentication_check(provider).await);
     }
@@ -142,7 +134,7 @@ fn config_check(path: &Path) -> DoctorCheck {
                 name: "config.provider_profiles".into(),
                 status: DoctorStatus::Pass,
                 message: format!(
-                    "{} contains {} schema-v2 Catalog-governed profiles",
+                    "{} contains {} provider profiles",
                     path.display(),
                     config.profiles.len()
                 ),
@@ -156,140 +148,37 @@ fn config_check(path: &Path) -> DoctorCheck {
     }
 }
 
-async fn version_check(
+async fn provider_check(
+    name: &str,
     driver: &ProviderDriver,
-    catalog: Option<std::sync::Arc<crate::VerifiedCatalog>>,
+    assertions: &crate::ProviderAssertions,
 ) -> DoctorCheck {
     match crate::acp::observe_provider(driver).await {
         Ok(observed) => {
-            let Some(catalog) = catalog else {
-                return DoctorCheck {
-                    name: format!("{}.compatibility", driver.id),
-                    status: DoctorStatus::Fail,
-                    message: "Catalog is unavailable; identity was observed but not authorized"
-                        .into(),
-                };
+            let assertion_result = observed.assertion_result(assertions);
+            let status = if matches!(assertion_result, crate::AssertionResult::Failed { .. }) {
+                DoctorStatus::Fail
+            } else if observed.version.observed().is_some() {
+                DoctorStatus::Pass
+            } else {
+                DoctorStatus::Warning
             };
-            let target = crate::host_target();
-            let agentmux_version = semver::Version::parse(env!("CARGO_PKG_VERSION"))
-                .expect("package version must be semver");
-            match crate::resolve_provider(
-                &catalog,
-                &crate::ResolutionRequest {
-                    driver,
-                    observed: &observed,
-                    target,
-                    policy: crate::VersionPolicy::Verified,
-                    exact_entry: None,
-                    agentmux_version: &agentmux_version,
-                    now: time::OffsetDateTime::now_utc(),
-                },
-            ) {
-                Ok(provider_lock) => DoctorCheck {
-                    name: format!("{}.compatibility", driver.id),
-                    status: match provider_lock.compatibility {
-                        crate::CompatibilityLevel::Verified => DoctorStatus::Pass,
-                        crate::CompatibilityLevel::Deprecated
-                        | crate::CompatibilityLevel::Experimental => DoctorStatus::Warning,
-                    },
-                    message: format!(
-                        "{} reports {} selected as {:?} by Catalog entry {} (recommended: {}; Driver {} revision {})",
-                        observed.executable.display(),
-                        observed.identity.display_version,
-                        provider_lock.compatibility,
-                        provider_lock.catalog_entry_id.as_deref().unwrap_or("none"),
-                        recommended_identity(&catalog, driver).unwrap_or("unavailable"),
-                        driver.driver_id.0,
-                        driver.driver_revision
-                    ),
-                },
-                Err(error) => DoctorCheck {
-                    name: format!("{}.compatibility", driver.id),
-                    status: DoctorStatus::Fail,
-                    message: format!(
-                        "installed identity {} is not usable: {error}",
-                        observed.identity.display_version
-                    ),
-                },
+            DoctorCheck {
+                name: format!("profile.{name}"),
+                status,
+                message: format!(
+                    "{} is safe; observed version: {:?}; assertions: {:?}",
+                    observed.executable.display(),
+                    observed.version,
+                    assertion_result
+                ),
             }
         }
         Err(failure) => DoctorCheck {
-            name: format!("{}.compatibility", driver.id),
+            name: format!("profile.{name}"),
             status: DoctorStatus::Fail,
             message: failure.message,
         },
-    }
-}
-
-fn recommended_identity<'a>(
-    catalog: &'a crate::VerifiedCatalog,
-    driver: &ProviderDriver,
-) -> Option<&'a str> {
-    let target = crate::host_target();
-    let channel = catalog.catalog.channels.iter().find(|channel| {
-        channel.provider == driver.id && channel.target == target && channel.name == "recommended"
-    })?;
-    catalog
-        .catalog
-        .entries
-        .iter()
-        .find(|entry| entry.entry_id == channel.entry_id)
-        .map(|entry| entry.identity.display_version.as_str())
-}
-
-fn catalog_store(config: &Path) -> Result<crate::CatalogStore, String> {
-    let bootstrap = crate::bootstrap_catalog().map_err(|error| error.to_string())?;
-    let keyring = crate::official_keyring().map_err(|error| error.to_string())?;
-    if config.exists() {
-        let config = crate::config::ProviderConfig::load(config).map_err(|error| match error {
-            crate::config::ConfigError::MigrationRequired { .. } => {
-                format!("{error}; run `agentmux config migrate --check` before doctor/serve")
-            }
-            _ => error.to_string(),
-        })?;
-        if config.catalog.source == crate::config::CatalogSourceConfig::File {
-            return crate::CatalogStore::open_file(
-                config.catalog.path.expect("validated Catalog file path"),
-                config
-                    .catalog
-                    .signature_path
-                    .expect("validated Catalog signature path"),
-                bootstrap,
-                keyring,
-            )
-            .map_err(|error| error.to_string());
-        }
-    }
-    crate::CatalogStore::open(crate::default_catalog_cache_path(), bootstrap, keyring)
-        .map_err(|error| error.to_string())
-}
-
-fn catalog_check(store: &crate::CatalogStore) -> DoctorCheck {
-    let status = store.status();
-    let expires = time::OffsetDateTime::parse(
-        &status.expires_at,
-        &time::format_description::well_known::Rfc3339,
-    );
-    let expired = expires.is_ok_and(|expires| expires <= time::OffsetDateTime::now_utc());
-    DoctorCheck {
-        name: "compatibility.catalog".into(),
-        status: if expired {
-            DoctorStatus::Fail
-        } else if !status.unsupported_driver_entries.is_empty() {
-            DoctorStatus::Warning
-        } else {
-            DoctorStatus::Pass
-        },
-        message: format!(
-            "{:?} Catalog {} sequence {} digest {} signed by {:?}, expires {}; unsupported Driver entries: {:?}",
-            status.source,
-            status.catalog_id,
-            status.sequence,
-            status.digest,
-            status.signature_key_ids,
-            status.expires_at,
-            status.unsupported_driver_entries
-        ),
     }
 }
 
@@ -378,14 +267,10 @@ fn database_check(database: &Path) -> DoctorCheck {
             |row| row.get::<_, i64>(0),
         )
     }) {
-        Ok(crate::storage::SCHEMA_VERSION) => DoctorCheck {
+        Ok(3) => DoctorCheck {
             name: "sqlite.metadata_store".into(),
             status: DoctorStatus::Pass,
-            message: format!(
-                "{} uses schema version {}",
-                database.display(),
-                crate::storage::SCHEMA_VERSION
-            ),
+            message: format!("{} uses schema version 3", database.display()),
         },
         Ok(version) => DoctorCheck {
             name: "sqlite.metadata_store".into(),

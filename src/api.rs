@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use futures::stream::{FuturesUnordered, StreamExt};
@@ -21,8 +21,6 @@ pub struct Broker {
     registry: Arc<Registry>,
     scheduler: Scheduler,
     idle_ttl: std::time::Duration,
-    catalog: Arc<RwLock<Arc<crate::VerifiedCatalog>>>,
-    catalog_store: Option<crate::CatalogStore>,
 }
 
 impl Default for Broker {
@@ -38,8 +36,6 @@ impl Broker {
             registry: Arc::new(Registry::default()),
             scheduler: Scheduler::new(max_concurrent_agents),
             idle_ttl: DEFAULT_IDLE_TTL,
-            catalog: catalog_cell(default_catalog()),
-            catalog_store: None,
         }
     }
 
@@ -49,8 +45,6 @@ impl Broker {
             registry: Arc::new(Registry::default()),
             scheduler: Scheduler::new(max_concurrent_agents),
             idle_ttl: idle_ttl.max(std::time::Duration::from_millis(1)),
-            catalog: catalog_cell(default_catalog()),
-            catalog_store: None,
         }
     }
 
@@ -63,8 +57,6 @@ impl Broker {
             registry: Arc::new(Registry::default()),
             scheduler: Scheduler::with_provider_limits(max_concurrent_runs, provider_limits),
             idle_ttl: DEFAULT_IDLE_TTL,
-            catalog: catalog_cell(default_catalog()),
-            catalog_store: None,
         }
     }
 
@@ -108,77 +100,7 @@ impl Broker {
             registry,
             scheduler: Scheduler::with_provider_limits(max_concurrent_runs, provider_limits),
             idle_ttl: idle_ttl.max(std::time::Duration::from_millis(1)),
-            catalog: catalog_cell(default_catalog()),
-            catalog_store: None,
         })
-    }
-
-    pub async fn with_sqlite_options_and_catalog(
-        max_concurrent_runs: usize,
-        path: impl AsRef<std::path::Path>,
-        catalog_root: impl Into<PathBuf>,
-        idle_ttl: std::time::Duration,
-        provider_limits: impl IntoIterator<Item = (crate::ProviderId, usize)>,
-    ) -> Result<Self> {
-        let store = crate::CatalogStore::open(
-            catalog_root,
-            crate::bootstrap_catalog().map_err(catalog_control_error)?,
-            crate::official_keyring().map_err(catalog_control_error)?,
-        )
-        .map_err(catalog_control_error)?;
-        Self::with_sqlite_options_and_catalog_store(
-            max_concurrent_runs,
-            path,
-            store,
-            idle_ttl,
-            provider_limits,
-        )
-        .await
-    }
-
-    pub async fn with_sqlite_options_and_catalog_store(
-        max_concurrent_runs: usize,
-        path: impl AsRef<std::path::Path>,
-        store: crate::CatalogStore,
-        idle_ttl: std::time::Duration,
-        provider_limits: impl IntoIterator<Item = (crate::ProviderId, usize)>,
-    ) -> Result<Self> {
-        let active = store.snapshot().catalog;
-        let mut broker =
-            Self::with_sqlite_options(max_concurrent_runs, path, idle_ttl, provider_limits).await?;
-        broker.catalog = catalog_cell(active);
-        broker.catalog_store = Some(store);
-        Ok(broker)
-    }
-
-    pub fn compatibility_status(&self) -> crate::CatalogStatus {
-        if let Some(store) = &self.catalog_store {
-            return store.status();
-        }
-        let catalog = self
-            .catalog
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
-        crate::status_from_snapshot(
-            &crate::CatalogSnapshot {
-                source: crate::CatalogSource::Bootstrap,
-                catalog,
-            },
-            std::path::Path::new(""),
-        )
-    }
-
-    pub fn reload_compatibility(&self) -> Result<crate::CatalogStatus> {
-        let store = self.catalog_store.as_ref().ok_or_else(|| {
-            ControlError::Internal("broker has no persistent Compatibility Catalog store".into())
-        })?;
-        let snapshot = store.reload().map_err(catalog_control_error)?;
-        *self
-            .catalog
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = snapshot.catalog;
-        Ok(store.status())
     }
 
     pub async fn spawn(&self, mut request: SpawnRequest) -> Result<SpawnReceipt> {
@@ -188,6 +110,10 @@ impl Broker {
             );
         }
         request.cwd = canonicalize_cwd(&request.cwd)?;
+        request
+            .assertions
+            .validate()
+            .map_err(AdmissionError::InvalidRequest)?;
         let manifest = request.provider.driver()?;
 
         let agent_id = crate::AgentId::new();
@@ -197,7 +123,7 @@ impl Broker {
         let agent = AgentSnapshot {
             agent_id,
             provider: request.provider.id(),
-            provider_lock: None,
+            provider_identity: None,
             process_alive: false,
             continuity: None,
             provider_capabilities: None,
@@ -220,10 +146,6 @@ impl Broker {
             commands.clone(),
             self.registry.clone(),
             self.scheduler.clone(),
-            self.catalog
-                .read()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clone(),
             agent,
             self.idle_ttl,
         ));
@@ -347,47 +269,14 @@ impl Broker {
         agents.sort_by_key(|agent| agent.agent_id);
         runs.sort_by_key(|run| run.run_id);
 
-        let catalog = self
-            .catalog
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
-        let target = crate::host_target();
         let providers = crate::all_provider_drivers()
             .into_iter()
-            .map(|driver| ProviderSnapshot {
-                id: driver.id,
-                protocol: driver.protocol,
-                recommended: catalog
-                    .catalog
-                    .channels
-                    .iter()
-                    .find(|channel| {
-                        channel.provider == driver.id
-                            && channel.target == target
-                            && channel.name == "recommended"
-                    })
-                    .and_then(|channel| {
-                        catalog.catalog.entries.iter().find(|entry| {
-                            entry.entry_id == channel.entry_id
-                                && entry.driver_id == driver.driver_id
-                                && entry.driver_revision == driver.driver_revision
-                        })
-                    })
-                    .map(|entry| crate::RecommendedCatalogEntry {
-                        provider: entry.provider,
-                        target: entry.target.clone(),
-                        channel: "recommended".into(),
-                        entry_id: entry.entry_id.clone(),
-                        display_version: entry.identity.display_version.clone(),
-                        driver_id: entry.driver_id.clone(),
-                        driver_revision: entry.driver_revision,
-                    }),
-                catalog_sequence: catalog.catalog.sequence,
-                catalog_digest: catalog.digest.clone(),
-                driver_id: driver.driver_id,
-                driver_revision: driver.driver_revision,
-                required_capabilities: driver.required_capabilities,
+            .map(|manifest| ProviderSnapshot {
+                id: manifest.id,
+                protocol: manifest.protocol,
+                driver_id: manifest.driver_id,
+                driver_revision: manifest.driver_revision,
+                required_capabilities: manifest.required_capabilities,
             })
             .collect();
         Ok(ListSnapshot {
@@ -527,18 +416,6 @@ impl Broker {
             Err(AdmissionError::AgentNotFound(agent_id).into())
         }
     }
-}
-
-fn catalog_cell(catalog: Arc<crate::VerifiedCatalog>) -> Arc<RwLock<Arc<crate::VerifiedCatalog>>> {
-    Arc::new(RwLock::new(catalog))
-}
-
-fn catalog_control_error(error: crate::CatalogError) -> ControlError {
-    ControlError::Internal(format!("Compatibility Catalog: {error}"))
-}
-
-fn default_catalog() -> Arc<crate::VerifiedCatalog> {
-    Arc::new(crate::bootstrap_catalog().expect("embedded bootstrap Catalog must verify"))
 }
 
 async fn wait_with_timeout<T>(

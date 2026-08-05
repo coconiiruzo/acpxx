@@ -27,11 +27,7 @@ trap 'rm -rf "$staging_parent"' EXIT HUP INT TERM
 stage="$staging_parent/agentmux-$version-$target"
 mkdir -p "$stage"
 install -m 0755 "target/$target/release/agentmux" "$stage/agentmux"
-install -m 0644 README.md LICENSE PROVIDER_COMPATIBILITY.md SECURITY.md "$stage/"
-install -m 0644 compatibility/bootstrap/catalog-v1.json "$stage/provider-catalog-v1.json"
-install -m 0644 compatibility/bootstrap/catalog-v1.sig "$stage/provider-catalog-v1.sig"
-install -m 0644 compatibility/schema/catalog-v1.schema.json "$stage/provider-catalog-v1.schema.json"
-install -m 0644 docs/provider-version-catalog-migration-plan.md "$stage/"
+install -m 0644 README.md LICENSE TESTED_PROVIDERS.md SECURITY.md "$stage/"
 
 python3 scripts/generate_supply_chain.py \
   --sbom "$stage/agentmux-$version.spdx.json" \

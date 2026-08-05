@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use super::cursor::environment_allowlist;
 use super::{
-    AcpVersionPolicy, ArtifactProbe, CapabilitySet, IdentityProbe, PackageMetadataProbe,
+    AcpProtocolPolicy, ArtifactProbe, CapabilitySet, IdentityProbe, PackageMetadataProbe,
     ProviderDriver,
 };
 use crate::{DriverId, ProviderId};
@@ -28,7 +28,7 @@ pub fn codex_driver(adapter: Option<PathBuf>) -> ProviderDriver {
                     .collect(),
             }),
         },
-        protocol: AcpVersionPolicy::StableV1,
+        protocol: AcpProtocolPolicy::StableV1,
         required_capabilities: CapabilitySet(Vec::new()),
         allowed_env: environment_allowlist(&[
             "CODEX_API_KEY",
@@ -62,23 +62,17 @@ mod tests {
 
     #[test]
     fn driver_routes_mutations_through_acp_permission_requests() {
-        let manifest = codex_driver(None);
+        let driver = codex_driver(None);
         assert_eq!(
-            manifest
+            driver
                 .fixed_env
                 .get("INITIAL_AGENT_MODE")
                 .map(String::as_str),
             Some("read-only")
         );
-        let config = manifest.fixed_env.get("CODEX_CONFIG").unwrap();
-        let config: serde_json::Value = serde_json::from_str(config).unwrap();
+        let config: serde_json::Value =
+            serde_json::from_str(driver.fixed_env.get("CODEX_CONFIG").unwrap()).unwrap();
         assert_eq!(config["approvals_reviewer"], "user");
         assert_eq!(config["features"]["guardian_approval"], false);
-        assert!(
-            manifest
-                .fixed_env
-                .keys()
-                .all(|name| manifest.allowed_env.contains(name))
-        );
     }
 }

@@ -26,7 +26,7 @@ brew install --formula ./agentmux.rb
 
 ## Source build
 
-Rust 1.88 or newer, Python 3.11 or newer, and the macOS command-line tools are
+Rust 1.96 or newer, Python 3.11 or newer, and the macOS command-line tools are
 required. A locked source build is:
 
 ```bash

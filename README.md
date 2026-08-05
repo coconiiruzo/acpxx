@@ -75,7 +75,7 @@ timeout only stops the caller from waiting and does not cancel the run.
 
 Prerequisites:
 
-- Rust 1.88 or newer
+- Rust 1.96 or newer
 - At least one pinned, authenticated provider executable listed in
   [Provider compatibility](PROVIDER_COMPATIBILITY.md)
 

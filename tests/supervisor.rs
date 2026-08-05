@@ -31,16 +31,7 @@ time.sleep(60)
         .spawn()
         .unwrap();
 
-    for _ in 0..100 {
-        if pid_file.exists() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    let pid: u32 = std::fs::read_to_string(&pid_file)
-        .expect("provider must publish grandchild PID")
-        .parse()
-        .unwrap();
+    let pid = wait_for_pid(&pid_file);
 
     supervisor.stdin.take().unwrap().flush().unwrap();
     let status = supervisor.wait().unwrap();
@@ -182,8 +173,7 @@ time.sleep(60)
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    wait_for_pid_file(&pid_file);
-    let pid = read_pid(&pid_file);
+    let pid = wait_for_pid(&pid_file);
     drop(supervisor.stdin.take());
     let _ = supervisor.wait().unwrap();
 
@@ -220,14 +210,16 @@ fn supervisor_passes_only_allowlisted_environment_variables() {
     assert_eq!(output.stdout, b"allowed|");
 }
 
-fn wait_for_pid_file(path: &std::path::Path) {
+fn wait_for_pid(path: &std::path::Path) -> u32 {
     for _ in 0..200 {
-        if path.exists() {
-            return;
+        if let Ok(contents) = std::fs::read_to_string(path)
+            && let Ok(pid) = contents.trim().parse()
+        {
+            return pid;
         }
         std::thread::sleep(Duration::from_millis(10));
     }
-    panic!("fixture did not publish {}", path.display());
+    panic!("fixture did not publish a PID to {}", path.display());
 }
 
 fn read_pid(path: &std::path::Path) -> u32 {

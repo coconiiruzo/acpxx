@@ -16,7 +16,7 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: dtolnay/rust-toolchain@1.96.0
         with:
           components: clippy,rustfmt
           targets: aarch64-apple-darwin

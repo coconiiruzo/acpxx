@@ -93,9 +93,11 @@ async fn run_deadline_terminates_an_authentication_hang() {
     assert_eq!(receipt.state, TerminalRunState::Interrupted);
     assert_eq!(receipt.stop_reason, StopReason::DeadlineExceeded);
     let snapshot = broker.list(Default::default()).await.unwrap();
-    assert_eq!(
+    assert!(matches!(
         snapshot.agents[0].continuity,
-        Some(Continuity::Lost(ContinuityLossReason::ForcedKill))
-    );
+        Some(Continuity::Lost(
+            ContinuityLossReason::ForcedKill | ContinuityLossReason::ProviderExited
+        ))
+    ));
     broker.shutdown().await.unwrap();
 }

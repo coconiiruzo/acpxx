@@ -2,7 +2,7 @@
 name = "acpxx"
 version = "1.0.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.96"
 description = "A handle-first local broker for coding agents over ACP"
 license = "Apache-2.0"
 repository = "https://github.com/coconiiruzo/acpxx"

@@ -1,6 +1,6 @@
 # Release procedure
 
-v2 releases target `aarch64-apple-darwin`. The checked-in packaging path uses a
+v1 releases target `aarch64-apple-darwin`. The checked-in packaging path uses a
 locked dependency graph and deterministic archive metadata.
 
 ## Local reproduction
@@ -18,8 +18,7 @@ third-party license inventory, and checksum-bound Homebrew formula under
 
 ## Maintainer release
 
-1. Confirm Cargo is `2.0.0`, the embedded bootstrap signature verifies, its
-   evidence digests resolve, and the public matrix is freshly rendered.
+1. Confirm the Cargo version equals the compatibility-manifest filename/version.
 2. Run fmt, clippy, all tests, ignored 10,000-Run and 1,000-process soaks, the
    four authenticated provider suites, and the release benchmark.
 3. Commit the release state and create an annotated `vVERSION` tag.
@@ -37,10 +36,3 @@ gh attestation verify agentmux-VERSION-aarch64-apple-darwin.tar.gz \
 The workflow rejects a tag that does not match `Cargo.toml`. No signing secret,
 provider credential, or automatic provider installer is stored in the release
 job.
-
-Catalog-only releases use the separate protected
-`compatibility-publish.yml` workflow. Discovery only opens a candidate issue;
-authenticated qualification emits machine-readable evidence from a controlled
-macOS arm64 runner. Approved exact bytes are signed and published under an
-immutable sequence tag. Bad data is corrected with a higher sequence that
-blocks/deprecates an entry—never by republishing or rolling back an old one.

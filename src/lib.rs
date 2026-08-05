@@ -4,7 +4,6 @@ pub mod acp;
 pub mod api;
 #[cfg(unix)]
 pub mod benchmark;
-pub mod compatibility;
 pub mod config;
 pub mod doctor;
 pub mod error;
@@ -19,7 +18,6 @@ pub mod security;
 pub mod storage;
 
 pub use api::Broker;
-pub use compatibility::*;
 pub use error::{AdmissionError, ControlError, Result};
 pub use model::*;
 pub use providers::*;

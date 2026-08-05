@@ -22,7 +22,6 @@ async fn terminal_receipt_survives_restart_without_transcript_or_session_secret(
         .await
         .unwrap();
     assert_eq!(live.output.text, "mock-ok");
-    let live_lock = live.provider_lock.clone().expect("missing provider lock");
     let session_id = live
         .session_stamp
         .as_ref()
@@ -37,7 +36,6 @@ async fn terminal_receipt_survives_restart_without_transcript_or_session_secret(
     assert!(!persisted.contains("private-prompt-marker-never-persist"));
     assert!(!persisted.contains("mock-ok"));
     assert!(!persisted.contains(&session_id));
-    assert!(persisted.contains(&live_lock.artifact_digests[0].digest));
 
     let restored = Broker::with_sqlite(1, &database).await.unwrap();
     let receipt = restored
@@ -47,7 +45,6 @@ async fn terminal_receipt_survives_restart_without_transcript_or_session_secret(
     assert_eq!(receipt.state, TerminalRunState::Succeeded);
     assert!(receipt.output.text.is_empty());
     assert!(receipt.session_stamp.is_none());
-    assert_eq!(receipt.provider_lock, Some(live_lock));
     let snapshot = restored
         .list(ListQuery {
             agent_id: Some(spawned.agent.agent_id),
@@ -85,7 +82,6 @@ fn nonterminal_run_is_reconciled_to_host_restarted() {
         .save_agent(&AgentSnapshot {
             agent_id,
             provider: ProviderId::Grok,
-            provider_lock: None,
             process_alive: true,
             continuity: None,
             provider_capabilities: None,
@@ -121,7 +117,7 @@ fn nonterminal_run_is_reconciled_to_host_restarted() {
 }
 
 #[test]
-fn schema_v0_is_migrated_transactionally_to_v2() {
+fn schema_v0_is_migrated_transactionally_to_v1() {
     let database = database_path();
     let connection = rusqlite::Connection::open(&database).unwrap();
     connection
@@ -151,7 +147,7 @@ fn schema_v0_is_migrated_transactionally_to_v2() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(version, 2);
+    assert_eq!(version, 1);
     let has_completion_sequence = connection
         .prepare("PRAGMA table_info(runs)")
         .unwrap()
@@ -159,84 +155,6 @@ fn schema_v0_is_migrated_transactionally_to_v2() {
         .unwrap()
         .any(|name| name.unwrap() == "completion_sequence");
     assert!(has_completion_sequence);
-    let has_provider_lock = connection
-        .prepare("PRAGMA table_info(runs)")
-        .unwrap()
-        .query_map([], |row| row.get::<_, String>(1))
-        .unwrap()
-        .any(|name| name.unwrap() == "provider_lock_json");
-    assert!(has_provider_lock);
-    drop(connection);
-    cleanup_database(&database);
-}
-
-#[test]
-fn schema_v1_is_migrated_to_v2_without_inventing_a_provider_lock() {
-    let database = database_path();
-    let agent_id = acpxx::AgentId::new();
-    let run_id = acpxx::RunId::new();
-    let agent = AgentSnapshot {
-        agent_id,
-        provider: ProviderId::Grok,
-        provider_lock: None,
-        process_alive: false,
-        continuity: Some(Continuity::Lost(ContinuityLossReason::HostRestarted)),
-        provider_capabilities: None,
-        broker_capabilities: acpxx::BrokerCapabilitySnapshot::default(),
-        active_run_id: None,
-        latest_run_id: Some(run_id),
-        mailbox_depth: 0,
-        display_name: None,
-        display_path: None,
-        cwd: PathBuf::from("/tmp"),
-    };
-    let run = RunSnapshot::queued(run_id, agent_id, std::time::SystemTime::now());
-    let connection = rusqlite::Connection::open(&database).unwrap();
-    connection
-        .execute_batch(
-            "CREATE TABLE schema_metadata (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
-             INSERT INTO schema_metadata(key, value) VALUES('schema_version', 1);
-             CREATE TABLE agents (agent_id TEXT PRIMARY KEY, snapshot_json TEXT NOT NULL);
-             CREATE TABLE runs (
-               run_id TEXT PRIMARY KEY,
-               agent_id TEXT NOT NULL,
-               snapshot_json TEXT NOT NULL,
-               receipt_json TEXT,
-               completion_sequence INTEGER NOT NULL DEFAULT 0
-             );",
-        )
-        .unwrap();
-    connection
-        .execute(
-            "INSERT INTO agents(agent_id, snapshot_json) VALUES(?1, ?2)",
-            rusqlite::params![agent_id.to_string(), serde_json::to_string(&agent).unwrap()],
-        )
-        .unwrap();
-    connection
-        .execute(
-            "INSERT INTO runs(run_id, agent_id, snapshot_json) VALUES(?1, ?2, ?3)",
-            rusqlite::params![
-                run_id.to_string(),
-                agent_id.to_string(),
-                serde_json::to_string(&run).unwrap()
-            ],
-        )
-        .unwrap();
-    drop(connection);
-
-    let store = acpxx::storage::MetadataStore::open(&database).unwrap();
-    let restored = store.restore_and_reconcile().unwrap();
-    assert_eq!(restored.agents[0].provider_lock, None);
-    assert_eq!(restored.terminal_runs[0].provider_lock, None);
-    let connection = rusqlite::Connection::open(&database).unwrap();
-    let version: i64 = connection
-        .query_row(
-            "SELECT value FROM schema_metadata WHERE key='schema_version'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert_eq!(version, 2);
     drop(connection);
     cleanup_database(&database);
 }

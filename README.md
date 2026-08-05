@@ -4,19 +4,19 @@
 broker for coding agents that speak the
 [Agent Client Protocol (ACP)](https://agentclientprotocol.com/).
 
-The v2 runtime is one closed control API for exactly **Codex, Claude, Grok, and
+The v1 target is one closed control API for exactly **Codex, Claude, Grok, and
 Cursor**. The Rust package still uses the repository name `acpxx`; its single
 distributed executable is named `agentmux`. Provider execution uses stable ACP
-v1. A signed Compatibility Catalog authorizes exact observed identities and
-artifact digests independently from the agentmux binary release.
+v1 and exact-version manifests for Grok, Cursor, Codex, and Claude.
 
-> Status: v2.0.0. Provider compatibility is Catalog-driven, immutable per
-> Agent, persisted in receipts, and explicitly updateable without a binary
-> release. The four-provider scope and stable ACP v1 wire protocol are unchanged.
+> Status: v1.0.0. The runtime, all four stable provider integrations,
+> authenticated conformance, persistence, security hardening,
+> performance/race/soak/chaos qualification, and reproducible signed release
+> artifacts are complete.
 
-The current signed sequence and recommended exact identities are generated in
-[Provider compatibility](PROVIDER_COMPATIBILITY.md). A matching version string
-without the qualified artifact digest is rejected.
+Grok CLI `0.2.118`, Cursor Agent `2026.07.20-8cc9c0b`, Codex ACP `1.1.9` with
+bundled Codex `0.145.0`, and Claude ACP `0.64.2` with Agent SDK `0.3.220`
+currently satisfy the stable provider gate.
 
 ## Why
 
@@ -45,9 +45,7 @@ identity.
 spawn
   -> queued Run + handles returned
   -> Agent actor acquires capacity
-  -> Driver identity and artifact probes
-  -> deny-first signed Catalog resolution
-  -> immutable ResolvedProviderLock
+  -> exact Grok version probe
   -> grok --no-auto-update agent stdio
   -> ACP initialize (v1)
   -> session/new
@@ -62,7 +60,7 @@ timeout only stops the caller from waiting and does not cancel the run.
 
 ### Operation matrix
 
-| Operation | Contract | v2 implementation |
+| Operation | Contract | v1 implementation |
 | --- | --- | --- |
 | `spawn` | Create Agent, process/session, and initial Run | yes, persistent Grok |
 | `send` | Queue mailbox message without starting a Run | yes, bounded mailbox |
@@ -78,7 +76,7 @@ timeout only stops the caller from waiting and does not cancel the run.
 Prerequisites:
 
 - Rust 1.96 or newer
-- At least one qualified, authenticated provider executable listed in
+- At least one pinned, authenticated provider executable listed in
   [Provider compatibility](PROVIDER_COMPATIBILITY.md)
 
 ```bash
@@ -89,11 +87,9 @@ target/debug/agentmux serve \
 target/debug/agentmux spawn --provider grok --cwd . \
   "Reply with a one-line summary of this repository"
 target/debug/agentmux spawn --profile grok-default --cwd . \
-  "Run the qualified Grok profile"
+  "Run the pinned Grok profile"
 target/debug/agentmux wait RUN_UUID
 target/debug/agentmux doctor --json
-target/debug/agentmux compatibility status --json
-target/debug/agentmux provider verify grok-default --json
 target/release/agentmux benchmark --enforce --json
 ```
 
@@ -104,16 +100,10 @@ permission request:
 target/debug/agentmux spawn --permissions allow-all "Create hello.txt"
 ```
 
-If a profile uses `version_policy = "experimental"`, mutation-capable
-permissions additionally require `--allow-unverified-mutations`. This is a
-deliberate double opt-in.
-
 Provider profiles are loaded from `~/.config/agentmux/providers.toml` by
-default. Config schema v2 removes user-authored versions, checksums, command
-arguments, and self-attested qualification fields. Migrate v1 explicitly with
-`agentmux config migrate --check` followed by `--write`; a timestamped backup is
-created before an atomic mode-`0600` replacement. Only each Provider Driver's
-allowlisted environment variables cross the
+default. The file must be a regular file with mode `0600`; unknown fields,
+untested versions, checksum mismatches, and non-v1 protocol locks are rejected.
+Only each provider manifest's allowlisted environment variables cross the
 supervisor boundary.
 
 `spawn` prints the Agent/Run handles. `wait` prints a JSON `RunReceipt`
@@ -134,18 +124,17 @@ disposition.
 - No session replay, provider fallback, CLI output scraping, or automatic
   adapter installation is permitted.
 
-## Protocol and provider compatibility
+## Protocol and provider pins
 
 `acpxx` pins `agent-client-protocol = 2.0.0` without unstable features. Despite
 the crate version, its default schema remains stable protocol v1; protocol v2
 is still behind `unstable_protocol_v2`. See the
 [official Rust SDK](https://github.com/agentclientprotocol/rust-sdk).
 
-`serve` and `spawn` never access the network. Only `agentmux compatibility
-update` downloads or imports a complete signed Catalog, applies signature,
-expiry, schema, Driver, and monotonic-sequence checks, installs an immutable
-cache generation, and asks a running IPC v2 daemon to reload it. Existing
-Agents keep their original lock, process, and session.
+The first tested provider manifest pins Grok CLI `0.2.118` and launches the
+documented native endpoint `grok --no-auto-update agent stdio`. See the
+[Grok CLI reference](https://docs.x.ai/build/cli/reference) and
+[headless/ACP guide](https://docs.x.ai/build/cli/headless-scripting).
 
 ## Scope and roadmap
 
@@ -171,8 +160,7 @@ Read:
 - [Provider compatibility](PROVIDER_COMPATIBILITY.md)
 - [Provider conformance](CONFORMANCE.md)
 - [Performance qualification](PERFORMANCE.md)
-- [v2 Definition of Done](V2_DEFINITION_OF_DONE.md)
-- [Catalog migration plan](docs/provider-version-catalog-migration-plan.md)
+- [v1 Definition of Done](V1_DEFINITION_OF_DONE.md)
 - [ADR-0001](docs/adr/0001-handle-first-acp-runtime.md)
 
 ## Development
@@ -185,7 +173,7 @@ cargo test --all-targets
 
 The test suite includes a black-box mock ACP process. Authenticated provider
 audits are explicit ignored/manual suites because CI does not receive provider
-credentials. The release gate requires those suites on the qualified environment.
+credentials. The release gate requires those suites on the pinned environment.
 
 ## License
 

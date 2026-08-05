@@ -1,23 +1,20 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use super::{AcpVersionPolicy, ArtifactProbe, CapabilitySet, IdentityProbe, ProviderDriver};
-use crate::{DriverId, ProviderId};
+use super::{AcpVersionPolicy, CapabilitySet, ProviderManifest, VersionProbe};
+use crate::ProviderId;
+
+pub const CURSOR_TESTED_VERSION: &str = "2026.07.20-8cc9c0b";
 
 #[must_use]
-pub fn cursor_driver(executable: Option<PathBuf>) -> ProviderDriver {
-    ProviderDriver {
+pub fn cursor_manifest(executable: Option<PathBuf>) -> ProviderManifest {
+    ProviderManifest {
         id: ProviderId::Cursor,
-        driver_id: DriverId::new("cursor-native"),
-        driver_revision: 1,
         command: executable.unwrap_or_else(|| PathBuf::from("cursor-agent")),
         args: vec!["acp".into()],
-        identity_probe: IdentityProbe::ExactOutput {
+        version_probe: VersionProbe::ExactOutput {
             args: vec!["--version".into()],
-            strip_prefix: None,
-        },
-        artifact_probe: ArtifactProbe::LaunchExecutableSha256 {
-            package_metadata: None,
+            expected: CURSOR_TESTED_VERSION.into(),
         },
         protocol: AcpVersionPolicy::StableV1,
         required_capabilities: CapabilitySet(Vec::new()),

@@ -184,45 +184,6 @@ async fn protocol_version_mismatch_is_explicit() {
 }
 
 #[tokio::test]
-async fn catalog_status_and_reload_are_explicit_ipc_v2_operations() {
-    let socket = socket_path();
-    let database = std::env::temp_dir().join(format!("agentmux-ipc-{}.sqlite3", Uuid::now_v7()));
-    let catalog_root = std::env::temp_dir().join(format!("agentmux-catalog-{}", Uuid::now_v7()));
-    let broker = Broker::with_sqlite_options_and_catalog(
-        1,
-        &database,
-        &catalog_root,
-        Duration::from_secs(30),
-        std::iter::empty(),
-    )
-    .await
-    .unwrap();
-    let (stop, stopped) = tokio::sync::oneshot::channel();
-    let server = LocalServer::bind(&socket).unwrap();
-    let task = tokio::spawn(server.serve_until(broker, async {
-        let _ = stopped.await;
-    }));
-    let client = IpcClient::new(&socket);
-    for command in [
-        IpcCommand::CompatibilityStatus,
-        IpcCommand::ReloadCompatibility,
-    ] {
-        let response = client.request(command).await.unwrap();
-        assert!(matches!(
-            response,
-            IpcResponse::CompatibilityStatus(ref status)
-                if status.catalog_id == "agentmux-official" && status.sequence == 1
-        ));
-    }
-    stop.send(()).unwrap();
-    task.await.unwrap().unwrap();
-    for suffix in ["", "-wal", "-shm"] {
-        let _ = std::fs::remove_file(format!("{}{suffix}", database.display()));
-    }
-    let _ = std::fs::remove_dir_all(catalog_root);
-}
-
-#[tokio::test]
 async fn oversized_frame_is_rejected_without_stopping_the_broker() {
     use acpxx::ipc::MAX_FRAME_SIZE;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

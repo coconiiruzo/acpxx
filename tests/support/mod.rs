@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use acpxx::{PermissionPolicy, ProviderId, ProviderSpec, SpawnRequest, Task, VersionPolicy};
+use acpxx::{PermissionPolicy, ProviderId, ProviderSpec, SpawnRequest, Task};
 use uuid::Uuid;
 
 pub fn mock_request(mode: &str, delay: f64) -> SpawnRequest {
@@ -16,9 +16,6 @@ pub fn mock_request(mode: &str, delay: f64) -> SpawnRequest {
             "return the fixture output __fake_mode={mode} __fake_delay={delay}"
         )),
         permission_policy: PermissionPolicy::Deny,
-        version_policy: VersionPolicy::Experimental,
-        catalog_entry: None,
-        allow_unverified_mutations: false,
     }
 }
 
@@ -35,6 +32,8 @@ impl MockProviderFixture {
     }
 
     pub fn new_with_marker(provider: ProviderId, marker: &str) -> Self {
+        use std::os::unix::fs::symlink;
+
         let script =
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mock_acp_agent.py");
         let executable = std::env::temp_dir().join(format!(
@@ -42,7 +41,7 @@ impl MockProviderFixture {
             provider.as_str(),
             Uuid::now_v7()
         ));
-        std::fs::hard_link(script, &executable).unwrap();
+        symlink(script, &executable).unwrap();
         Self {
             provider,
             executable,
@@ -68,9 +67,6 @@ impl MockProviderFixture {
             cwd: PathBuf::from(env!("CARGO_MANIFEST_DIR")),
             task: Task::new(format!("controlled conformance __fake_mode={mode}")),
             permission_policy: PermissionPolicy::Deny,
-            version_policy: VersionPolicy::Experimental,
-            catalog_entry: None,
-            allow_unverified_mutations: false,
         }
     }
 }

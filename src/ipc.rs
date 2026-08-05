@@ -20,11 +20,10 @@ use crate::{
     RunId, RunReceipt, SpawnReceipt, SpawnRequest, WaitOptions,
 };
 
-pub const IPC_VERSION: u16 = 2;
+pub const IPC_VERSION: u16 = 1;
 pub const MAX_FRAME_SIZE: usize = 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct RequestEnvelope {
     pub version: u16,
     pub request_id: Uuid,
@@ -70,8 +69,6 @@ pub enum IpcCommand {
         timeout_ms: Option<u64>,
     },
     Watch(RunHandle),
-    CompatibilityStatus,
-    ReloadCompatibility,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -86,7 +83,6 @@ pub enum IpcResponse {
     Runs(Vec<RunReceipt>),
     Event(RunEvent),
     StreamEnd(RunReceipt),
-    CompatibilityStatus(crate::CatalogStatus),
     Error(IpcError),
 }
 
@@ -358,12 +354,6 @@ async fn dispatch(broker: &Broker, command: IpcCommand) -> IpcResponse {
                 .map(IpcResponse::Runs),
             Err(error) => Err(error),
         },
-        IpcCommand::CompatibilityStatus => Ok(IpcResponse::CompatibilityStatus(
-            broker.compatibility_status(),
-        )),
-        IpcCommand::ReloadCompatibility => broker
-            .reload_compatibility()
-            .map(IpcResponse::CompatibilityStatus),
         IpcCommand::Watch(_) => unreachable!("watch is handled before dispatch"),
     };
     result.unwrap_or_else(|error| IpcResponse::Error(error.into()))

@@ -2,31 +2,21 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use super::cursor::environment_allowlist;
-use super::{
-    AcpVersionPolicy, ArtifactProbe, CapabilitySet, IdentityProbe, PackageMetadataProbe,
-    ProviderDriver,
-};
-use crate::{DriverId, ProviderId};
+use super::{AcpVersionPolicy, CapabilitySet, ProviderManifest, VersionProbe};
+use crate::ProviderId;
+
+pub const CODEX_ACP_TESTED_VERSION: &str = "1.1.9";
+pub const CODEX_BUNDLED_TESTED_VERSION: &str = "0.145.0";
 
 #[must_use]
-pub fn codex_driver(adapter: Option<PathBuf>) -> ProviderDriver {
-    ProviderDriver {
+pub fn codex_manifest(adapter: Option<PathBuf>) -> ProviderManifest {
+    ProviderManifest {
         id: ProviderId::Codex,
-        driver_id: DriverId::new("codex-acp"),
-        driver_revision: 1,
         command: adapter.unwrap_or_else(|| PathBuf::from("codex-acp")),
         args: Vec::new(),
-        identity_probe: IdentityProbe::ExactOutput {
+        version_probe: VersionProbe::ExactOutput {
             args: vec!["--version".into()],
-            strip_prefix: Some("@agentclientprotocol/codex-acp ".into()),
-        },
-        artifact_probe: ArtifactProbe::LaunchExecutableSha256 {
-            package_metadata: Some(PackageMetadataProbe {
-                package_name: "@agentclientprotocol/codex-acp".into(),
-                component_dependencies: [("codex".into(), "@openai/codex".into())]
-                    .into_iter()
-                    .collect(),
-            }),
+            expected: format!("@agentclientprotocol/codex-acp {CODEX_ACP_TESTED_VERSION}"),
         },
         protocol: AcpVersionPolicy::StableV1,
         required_capabilities: CapabilitySet(Vec::new()),
@@ -61,8 +51,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn driver_routes_mutations_through_acp_permission_requests() {
-        let manifest = codex_driver(None);
+    fn tested_manifest_routes_mutations_through_acp_permission_requests() {
+        let manifest = codex_manifest(None);
         assert_eq!(
             manifest
                 .fixed_env

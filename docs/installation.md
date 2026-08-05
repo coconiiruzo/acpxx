@@ -1,6 +1,6 @@
 # Installation
 
-agentmux v2 supports macOS arm64. Provider CLIs and ACP adapters are separate
+agentmux v1 supports macOS arm64. Provider CLIs and ACP adapters are separate
 executables and are not downloaded or updated by agentmux.
 
 ## Release archive
@@ -34,12 +34,5 @@ cargo build --locked --release
 install -m 0755 target/release/agentmux /usr/local/bin/agentmux
 ```
 
-After installing, inspect the embedded signed bootstrap with `agentmux
-compatibility status`, configure a schema-v2 provider profile, start `agentmux
-serve`, and run `agentmux doctor --json`. The mutable Catalog cache is created
-only by explicit update under `$XDG_DATA_HOME/agentmux/compatibility`, or under
-`~/Library/Application Support/agentmux/compatibility` when XDG is unset. See
-[Provider setup](provider-setup.md).
-
-Upgrade from v1 begins with `agentmux config migrate --check`; normal v2
-commands intentionally refuse to interpret a v1 profile file.
+After installing, configure a pinned provider profile, start `agentmux serve`,
+and run `agentmux doctor --json`. See [Provider setup](provider-setup.md).

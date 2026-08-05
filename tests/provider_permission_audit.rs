@@ -113,9 +113,6 @@ async fn run_write_attempt(
             ))
             .with_deadline(Duration::from_secs(120)),
             permission_policy: policy,
-            version_policy: acpxx::VersionPolicy::Verified,
-            catalog_entry: None,
-            allow_unverified_mutations: false,
         })
         .await
         .unwrap();

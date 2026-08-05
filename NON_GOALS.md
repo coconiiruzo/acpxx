@@ -23,15 +23,3 @@ An internal fake ACP executable is required for deterministic runtime and
 conformance tests. It is a test fixture, not a supported provider or extension
 point. Future ideas do not receive empty modules, enum variants, compatibility
 rows, or placeholder APIs in v1.
-
-## v2 Compatibility Catalog non-goals
-
-The signed Compatibility Catalog does not introduce a provider plugin system,
-arbitrary command provider, package manager, background updater, filesystem
-watcher, network access during `spawn`, provider fallback, transcript replay,
-ACP v2, or automatic process/session restart. Catalog updates distribute only
-compatibility metadata and never provider binaries or adapters.
-
-Semver ranges such as `latest`, `>=VERSION`, or `any-v1` are not provider
-authorization policies. Verified authorization always resolves to an exact
-identity, artifact digest set, target, and built-in Driver revision.

@@ -1,28 +1,8 @@
-# 実装状況
+# 新計画に対する現状実装差分
 
 最終更新: 2026-08-05
 
-Phase 0〜18はv1.0.0で完了した。v2.0.0ではprovider versionの権威を
-compile-time pinから署名付きCompatibility Catalogへ移行した。
-
-## v2 Catalog migration
-
-| 項目 | 状況 |
-| --- | --- |
-| Catalog domain/schema/bootstrap/signature/cache | complete |
-| ProviderDriver identity/artifact probeとTOCTOU検査 | complete |
-| deny-first resolverとimmutable provider lock | complete |
-| config schema v2と明示migration | complete |
-| SQLite schema v2、Rust API、IPC v2 | complete |
-| compatibility/provider/config CLIとdoctor | complete |
-| qualification evidence、candidate/qualification/publish workflow | complete |
-| generated compatibility docs、packaging、2.0 release gate | complete |
-
-詳細な契約と検証項目は
-[`provider-version-catalog-migration-plan.md`](provider-version-catalog-migration-plan.md)と
-[`V2_DEFINITION_OF_DONE.md`](../V2_DEFINITION_OF_DONE.md)を参照する。
-
-## v1 implementation record
+この表はPhase 0〜18の最終実装記録である。
 
 | Phase | 状況 | 既存資産 | 主な不足 |
 | ---: | --- | --- | --- |

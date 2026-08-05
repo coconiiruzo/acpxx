@@ -41,7 +41,6 @@ async fn every_provider_profile_enforces_permission_deny_and_explicit_allow() {
             let broker = Broker::new(1);
             let mut request = fixture.request(mode);
             request.permission_policy = policy;
-            request.allow_unverified_mutations = policy == PermissionPolicy::AllowAll;
             let spawned = broker.spawn(request).await.unwrap();
             let mut events = broker.events(spawned.run).unwrap();
             let permission = tokio::time::timeout(Duration::from_secs(2), async {

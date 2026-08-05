@@ -1,6 +1,6 @@
 [package]
 name = "acpxx"
-version = "2.0.0"
+version = "1.0.0"
 edition = "2024"
 rust-version = "1.96"
 description = "A handle-first local broker for coding agents over ACP"
@@ -15,19 +15,15 @@ path = "src/main.rs"
 
 [dependencies]
 agent-client-protocol = "=2.0.0"
-base64 = "0.22"
 clap = { version = "4.5", features = ["derive"] }
-ed25519-dalek = "2.2"
 futures = "0.3"
 libc = "0.2"
 rusqlite = { version = "=0.40.1", features = ["bundled"] }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 semver = { version = "1.0", features = ["serde"] }
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
 sha2 = "0.10"
 thiserror = "2.0"
-time = { version = "0.3.44", features = ["parsing"] }
 tokio = { version = "1.47", features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
 tracing = "0.1"

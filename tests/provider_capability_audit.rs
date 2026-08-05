@@ -43,6 +43,7 @@ async fn authenticated_provider_capability_inventory() {
                 task: Task::new("Do not use tools. Reply with exactly: capability-audit-ok")
                     .with_deadline(Duration::from_secs(120)),
                 permission_policy: PermissionPolicy::Deny,
+                assertions: Default::default(),
             })
             .await
             .unwrap();

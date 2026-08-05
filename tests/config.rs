@@ -2,145 +2,262 @@ use std::path::{Path, PathBuf};
 
 use acpxx::config::{ConfigError, ProviderConfig};
 use acpxx::{PermissionPolicy, ProviderId, ProviderSpec};
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 #[test]
-fn pinned_profile_resolves_to_the_closed_provider_spec() {
+fn final_v2_profile_resolves_with_optional_local_assertions() {
     let config_path = config_path();
     let executable = fixture_executable();
-    let checksum = checksum(&executable);
     write_config(
         &config_path,
         &format!(
-            r#"
+            r#"schema_version = 2
+
 [profiles.grok-default]
 provider = "grok"
 executable = "{}"
-args = ["--no-auto-update", "agent", "stdio"]
-version = "0.2.118"
-sha256 = "{checksum}"
-authentication = "cached login"
-initialize_verified = true
-session_new_verified = true
+permissions = "deny"
+
+[profiles.grok-default.assertions]
+version = "9999.0.0"
+launch_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 "#,
             executable.display()
         ),
     );
-
-    let config = ProviderConfig::load(&config_path).unwrap();
-    let profile = config.resolve("grok-default").unwrap();
+    let profile = ProviderConfig::load(&config_path)
+        .unwrap()
+        .resolve("grok-default")
+        .unwrap();
     assert_eq!(profile.provider, ProviderId::Grok);
     assert_eq!(profile.permission_policy, PermissionPolicy::Deny);
+    assert_eq!(profile.assertions.version.as_deref(), Some("9999.0.0"));
     assert_eq!(
         profile.provider_spec,
         ProviderSpec::Grok {
             executable: Some(executable)
         }
     );
-    let _ = std::fs::remove_file(config_path);
 }
 
 #[test]
-fn unknown_fields_cannot_smuggle_secrets_or_update_behavior() {
-    let config_path = config_path();
+fn floating_profile_has_no_version_gate() {
+    let path = config_path();
     write_config(
-        &config_path,
-        r#"
-[profiles.grok-default]
-provider = "grok"
-executable = "/tmp/grok"
-args = ["agent", "stdio"]
-version = "0.2.118"
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-authentication = "cached login"
-initialize_verified = true
-session_new_verified = true
-api_key = "must-not-be-accepted"
-auto_update = true
-"#,
+        &path,
+        &format!(
+            "schema_version = 2\n[profiles.cursor-default]\nprovider = \"cursor\"\nexecutable = \"{}\"\n",
+            fixture_executable().display()
+        ),
+    );
+    let profile = ProviderConfig::load(&path)
+        .unwrap()
+        .resolve("cursor-default")
+        .unwrap();
+    assert!(profile.assertions.is_empty());
+}
+
+#[test]
+fn unknown_fields_and_malformed_assertions_are_rejected() {
+    let path = config_path();
+    write_config(
+        &path,
+        &format!(
+            "schema_version = 2\n[profiles.grok]\nprovider = \"grok\"\nexecutable = \"{}\"\nauto_update = true\n",
+            fixture_executable().display()
+        ),
     );
     assert!(matches!(
-        ProviderConfig::load(&config_path),
+        ProviderConfig::load(&path),
         Err(ConfigError::Parse(_))
     ));
-    let _ = std::fs::remove_file(config_path);
+
+    write_config(
+        &path,
+        &format!(
+            "schema_version = 2\n[profiles.grok]\nprovider = \"grok\"\nexecutable = \"{}\"\n[profiles.grok.assertions]\nlaunch_sha256 = \"bad\"\n",
+            fixture_executable().display()
+        ),
+    );
+    assert!(matches!(
+        ProviderConfig::load(&path),
+        Err(ConfigError::InvalidProfile { .. })
+    ));
 }
 
 #[test]
-fn relative_executable_and_checksum_mismatch_are_rejected() {
-    let config_path = config_path();
+fn relative_executable_is_rejected() {
+    let path = config_path();
     write_config(
-        &config_path,
-        r#"
-[profiles.grok-default]
-provider = "grok"
-executable = "relative/grok"
-args = ["--no-auto-update", "agent", "stdio"]
-version = "0.2.118"
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-authentication = "cached login"
-initialize_verified = true
-session_new_verified = true
-"#,
+        &path,
+        "schema_version = 2\n[profiles.grok]\nprovider = \"grok\"\nexecutable = \"relative/grok\"\n",
     );
-    let config = ProviderConfig::load(&config_path).unwrap();
     assert!(matches!(
-        config.resolve("grok-default"),
+        ProviderConfig::load(&path),
         Err(ConfigError::InvalidProfile { .. })
     ));
+}
 
+#[test]
+fn v1_pins_migrate_to_local_assertions_without_catalog() {
+    let path = config_path();
     let executable = fixture_executable();
     write_config(
-        &config_path,
+        &path,
         &format!(
-            r#"
-[profiles.grok-default]
+            r#"[profiles.grok-default]
 provider = "grok"
 executable = "{}"
 args = ["--no-auto-update", "agent", "stdio"]
 version = "0.2.118"
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-authentication = "cached login"
+sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+authentication = "cached"
 initialize_verified = true
 session_new_verified = true
 "#,
             executable.display()
         ),
     );
-    let config = ProviderConfig::load(&config_path).unwrap();
     assert!(matches!(
-        config.resolve("grok-default"),
-        Err(ConfigError::InvalidProfile { .. })
+        ProviderConfig::load(&path),
+        Err(ConfigError::MigrationRequired { found: None })
     ));
-    let _ = std::fs::remove_file(config_path);
+    let migration = acpxx::config::check_migration(&path).unwrap();
+    assert!(migration.is_ready());
+    let rendered = migration.rendered.unwrap();
+    assert!(rendered.contains("version = \"0.2.118\""));
+    assert!(rendered.contains("launch_sha256"));
+    assert!(!rendered.to_ascii_lowercase().contains("catalog"));
+}
+
+#[test]
+fn catalog_v2_floating_and_exact_profiles_migrate_offline() {
+    let path = config_path();
+    let executable = fixture_executable();
+    write_config(
+        &path,
+        &format!(
+            r#"schema_version = 2
+
+[catalog]
+source = "official"
+
+[profiles.grok-floating]
+provider = "grok"
+executable = "{0}"
+version_policy = "verified"
+
+[profiles.grok-exact]
+provider = "grok"
+executable = "{0}"
+version_policy = "exact"
+catalog_entry = "grok/0.2.118/aarch64-apple-darwin/sha256-2de5b960"
+
+[profiles.cursor-experimental]
+provider = "cursor"
+executable = "{0}"
+version_policy = "experimental"
+"#,
+            executable.display()
+        ),
+    );
+    assert!(matches!(
+        ProviderConfig::load(&path),
+        Err(ConfigError::MigrationRequired { found: Some(2) })
+    ));
+    let rendered = acpxx::config::check_migration(&path)
+        .unwrap()
+        .rendered
+        .unwrap();
+    assert!(!rendered.to_ascii_lowercase().contains("catalog"));
+    assert_eq!(
+        rendered.matches("[profiles.grok-exact.assertions]").count(),
+        1
+    );
+    assert!(!rendered.contains("[profiles.grok-floating.assertions]"));
+    assert!(!rendered.contains("[profiles.cursor-experimental.assertions]"));
+}
+
+#[test]
+fn unknown_catalog_exact_entry_blocks_migration() {
+    let path = config_path();
+    let original = format!(
+        r#"schema_version = 2
+[catalog]
+source = "official"
+[profiles.grok]
+provider = "grok"
+executable = "{}"
+version_policy = "exact"
+catalog_entry = "unknown"
+"#,
+        fixture_executable().display()
+    );
+    write_config(&path, &original);
+    let migration = acpxx::config::check_migration(&path).unwrap();
+    assert!(!migration.is_ready());
+    assert!(migration.rendered.is_none());
+    assert!(matches!(
+        acpxx::config::write_migration(&path),
+        Err(ConfigError::MigrationBlocked(_))
+    ));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+}
+
+#[cfg(unix)]
+#[test]
+fn migration_write_creates_generalized_private_backup() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let path = config_path();
+    write_config(
+        &path,
+        &format!(
+            r#"[profiles.cursor]
+provider = "cursor"
+executable = "{}"
+args = ["acp"]
+version = "future-build"
+sha256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+authentication = "login"
+initialize_verified = true
+session_new_verified = true
+"#,
+            fixture_executable().display()
+        ),
+    );
+    let backup = acpxx::config::write_migration(&path).unwrap();
+    assert!(backup.to_string_lossy().contains("pre-runtime-compat"));
+    assert_eq!(
+        std::fs::metadata(&backup).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert!(ProviderConfig::load(&path).is_ok());
 }
 
 #[test]
 fn oversized_config_is_rejected_before_parsing() {
-    let config_path = config_path();
-    std::fs::write(&config_path, vec![b'x'; 1024 * 1024 + 1]).unwrap();
-    set_private_permissions(&config_path);
+    let path = config_path();
+    std::fs::write(&path, vec![b'x'; 1024 * 1024 + 1]).unwrap();
+    set_private_permissions(&path);
     assert!(matches!(
-        ProviderConfig::load(&config_path),
+        ProviderConfig::load(&path),
         Err(ConfigError::TooLarge)
     ));
-    let _ = std::fs::remove_file(config_path);
 }
 
 #[cfg(unix)]
 #[test]
 fn group_or_world_readable_config_is_rejected() {
-    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::PermissionsExt as _;
 
-    let config_path = config_path();
-    std::fs::write(&config_path, "profiles = {}").unwrap();
-    std::fs::set_permissions(&config_path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let path = config_path();
+    std::fs::write(&path, "schema_version = 2\nprofiles = {}\n").unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
     assert!(matches!(
-        ProviderConfig::load(&config_path),
+        ProviderConfig::load(&path),
         Err(ConfigError::InsecurePermissions(_))
     ));
-    let _ = std::fs::remove_file(config_path);
 }
 
 fn fixture_executable() -> PathBuf {
@@ -159,12 +276,7 @@ fn write_config(path: &Path, content: &str) {
 fn set_private_permissions(path: &Path) {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
     }
-}
-
-fn checksum(path: &Path) -> String {
-    let content = std::fs::read(path).unwrap();
-    format!("{:x}", Sha256::digest(content))
 }

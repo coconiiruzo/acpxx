@@ -20,10 +20,11 @@ use crate::{
     RunId, RunReceipt, SpawnReceipt, SpawnRequest, WaitOptions,
 };
 
-pub const IPC_VERSION: u16 = 1;
+pub const IPC_VERSION: u16 = 2;
 pub const MAX_FRAME_SIZE: usize = 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RequestEnvelope {
     pub version: u16,
     pub request_id: Uuid,

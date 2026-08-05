@@ -2,23 +2,36 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use super::cursor::environment_allowlist;
-use super::{AcpVersionPolicy, CapabilitySet, ProviderManifest, VersionProbe};
-use crate::ProviderId;
-
-pub const CLAUDE_ACP_TESTED_VERSION: &str = "0.64.2";
-pub const CLAUDE_AGENT_SDK_TESTED_VERSION: &str = "0.3.220";
+use super::{
+    AcpProtocolPolicy, ArtifactProbe, CapabilitySet, IdentityProbe, PackageMetadataProbe,
+    ProviderDriver,
+};
+use crate::{DriverId, ProviderId};
 
 #[must_use]
-pub fn claude_manifest(adapter: Option<PathBuf>) -> ProviderManifest {
-    ProviderManifest {
+pub fn claude_driver(adapter: Option<PathBuf>) -> ProviderDriver {
+    ProviderDriver {
         id: ProviderId::Claude,
+        driver_id: DriverId::new("claude-agent-acp"),
+        driver_revision: 1,
         command: adapter.unwrap_or_else(|| PathBuf::from("claude-agent-acp")),
         args: Vec::new(),
-        version_probe: VersionProbe::ExactOutput {
+        identity_probe: IdentityProbe::ExactOutput {
             args: vec!["--version".into()],
-            expected: CLAUDE_ACP_TESTED_VERSION.into(),
+            strip_prefix: None,
         },
-        protocol: AcpVersionPolicy::StableV1,
+        artifact_probe: ArtifactProbe::LaunchExecutableSha256 {
+            package_metadata: Some(PackageMetadataProbe {
+                package_name: "@agentclientprotocol/claude-agent-acp".into(),
+                component_dependencies: [(
+                    "claude_agent_sdk".into(),
+                    "@anthropic-ai/claude-agent-sdk".into(),
+                )]
+                .into_iter()
+                .collect(),
+            }),
+        },
+        protocol: AcpProtocolPolicy::StableV1,
         required_capabilities: CapabilitySet(Vec::new()),
         allowed_env: environment_allowlist(&[
             "ANTHROPIC_API_KEY",

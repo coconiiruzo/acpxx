@@ -6,7 +6,7 @@ cd "$repository_root"
 
 target=${AGENTMUX_RELEASE_TARGET:-aarch64-apple-darwin}
 if [ "$target" != "aarch64-apple-darwin" ]; then
-  echo "v1 release target must be aarch64-apple-darwin" >&2
+  echo "v2 release target must be aarch64-apple-darwin" >&2
   exit 2
 fi
 version=$(cargo metadata --locked --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
@@ -27,8 +27,7 @@ trap 'rm -rf "$staging_parent"' EXIT HUP INT TERM
 stage="$staging_parent/agentmux-$version-$target"
 mkdir -p "$stage"
 install -m 0755 "target/$target/release/agentmux" "$stage/agentmux"
-install -m 0644 README.md LICENSE PROVIDER_COMPATIBILITY.md SECURITY.md "$stage/"
-install -m 0644 "compatibility/agentmux-$version.json" "$stage/compatibility.json"
+install -m 0644 README.md LICENSE TESTED_PROVIDERS.md SECURITY.md "$stage/"
 
 python3 scripts/generate_supply_chain.py \
   --sbom "$stage/agentmux-$version.spdx.json" \

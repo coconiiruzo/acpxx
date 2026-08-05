@@ -1,50 +1,28 @@
-use std::collections::BTreeSet;
+#[test]
+fn tested_provider_document_is_observational_and_runtime_has_no_version_allowlist() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let document = std::fs::read_to_string(root.join("TESTED_PROVIDERS.md"))
+        .expect("TESTED_PROVIDERS.md must be checked in");
+    assert!(document.contains("non-authoritative"));
+    assert!(document.contains("not a runtime allowlist"));
 
-use acpxx::{
-    CLAUDE_ACP_TESTED_VERSION, CLAUDE_AGENT_SDK_TESTED_VERSION, CODEX_ACP_TESTED_VERSION,
-    CODEX_BUNDLED_TESTED_VERSION, CURSOR_TESTED_VERSION, GROK_TESTED_VERSION,
-};
+    for driver in acpxx::all_provider_drivers() {
+        let serialized = serde_json::to_string(&driver).unwrap();
+        assert!(!serialized.contains("tested_version"));
+        assert!(!serialized.contains("recommended"));
+        assert!(!serialized.contains("catalog"));
+    }
+}
 
 #[test]
-fn versioned_compatibility_manifest_matches_compiled_provider_pins() {
-    let path = format!(
-        "{}/compatibility/agentmux-{}.json",
-        env!("CARGO_MANIFEST_DIR"),
-        env!("CARGO_PKG_VERSION")
-    );
-    let manifest: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-    assert_eq!(manifest["agentmux"], env!("CARGO_PKG_VERSION"));
-    assert_eq!(manifest["acp_protocol"], "v1");
-    let providers = manifest["providers"].as_object().unwrap();
-    assert_eq!(
-        providers
-            .keys()
-            .map(String::as_str)
-            .collect::<BTreeSet<_>>(),
-        BTreeSet::from(["claude", "codex", "cursor", "grok"])
-    );
-    assert_eq!(providers["grok"]["tested_version"], GROK_TESTED_VERSION);
-    assert_eq!(providers["cursor"]["tested_version"], CURSOR_TESTED_VERSION);
-    assert_eq!(
-        providers["codex"]["adapter_version"],
-        CODEX_ACP_TESTED_VERSION
-    );
-    assert_eq!(
-        providers["codex"]["codex_version"],
-        CODEX_BUNDLED_TESTED_VERSION
-    );
-    assert_eq!(
-        providers["claude"]["adapter_version"],
-        CLAUDE_ACP_TESTED_VERSION
-    );
-    assert_eq!(
-        providers["claude"]["claude_agent_sdk_version"],
-        CLAUDE_AGENT_SDK_TESTED_VERSION
-    );
-    assert!(
-        providers
-            .values()
-            .all(|provider| provider["status"] == "stable")
-    );
+fn central_compatibility_assets_and_workflows_are_absent() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    assert!(!root.join("compatibility").exists());
+    for workflow in [
+        "compatibility-publish.yml",
+        "provider-candidate-discovery.yml",
+        "provider-qualification.yml",
+    ] {
+        assert!(!root.join(".github/workflows").join(workflow).exists());
+    }
 }

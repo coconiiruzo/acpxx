@@ -1,35 +1,28 @@
 # Troubleshooting
 
-Start with:
+Start with `agentmux doctor --json`, `agentmux provider inspect PROFILE --json`, and
+`agentmux list`.
 
-```bash
-agentmux doctor --json
-agentmux list
-```
+- `provider_spawn_failed`: check the absolute canonical path, regular-file type, current-user/root
+  ownership, executable bits, and absence of group/world write bits.
+- `provider_assertion_failed`: the configured exact value mismatched or could not be observed.
+  Update the local assertion intentionally or delete the assertions table to use runtime
+  negotiation.
+- `provider_artifact_changed`: the launch artifact or an asserted supplementary metadata file
+  changed between observation and spawn; retry only after the local installation is stable.
+- `acp_initialize_failed`: the provider did not negotiate stable ACP v1 or lacks a required
+  operation capability.
+- `authentication_failed`: complete the provider's login/API-key flow before starting the broker.
+- `stale_parent` / `agent_busy`: use the latest terminal Run or wait/interrupt the active Run.
+- `continuity_lost`: spawn a new Agent; agentmux never creates a replacement session or replays a
+  transcript.
+- wait timeout: only the client stopped waiting. Reconnect with `wait` or `watch`.
+- `host_restarted`: the former live session cannot be proven after restart.
+- IPC ownership/version error: stop the owning broker and validate runtime-directory permissions;
+  never delete an active socket or lock by guesswork.
+- SQLite corruption/newer schema: back up the file and use an explicitly selected database. The
+  broker never starts providers as a repair action.
 
-Common failures:
-
-- `adapter_not_found` or `provider_spawn_failed`: configure an absolute path and
-  confirm it is executable.
-- version mismatch: install the exact compatibility-manifest version; agentmux
-  deliberately does not auto-update or fall back.
-- `authentication_failed`: complete the provider's own login flow or supply its
-  documented credential environment before starting the broker.
-- `stale_parent`: use the Agent's latest terminal Run ID from `agentmux list`.
-- `agent_busy`: wait for or interrupt the active Run; one Agent permits one Run.
-- `continuity_lost`: spawn a new Agent. Replacement sessions and transcript
-  replay are intentionally forbidden.
-- wait timeout: the Run is still executing. Inspect `list` or reconnect with
-  `wait`/`watch`.
-- `host_restarted`: the old live process/session cannot be proven after restart.
-- socket permission/version error: remove neither a live socket nor lock by
-  guesswork; stop the owning broker, verify the current-user runtime directory,
-  and rerun `doctor`.
-- SQLite corruption: back up the file and start with an explicitly selected new
-  database. A corrupt database never causes providers to start.
-
-Provider stderr is drained with a bounded tail by the pinned ACP SDK. ACP stdout
-must contain protocol frames only. For a repeatable report, include agentmux and
-provider versions, the redacted `doctor --json` output, failure code/stage, and
-the compatibility manifest. Never attach credentials, prompt/output bodies, or
-raw environment dumps.
+Version probe warnings alone do not prevent a spawn without a matching assertion. Reports should
+include redacted doctor/inspect output, failure code/stage, agentmux version, and observed provider
+identity—never credentials, prompts, output bodies, session IDs, or raw environment dumps.

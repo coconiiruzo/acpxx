@@ -113,6 +113,7 @@ async fn run_write_attempt(
             ))
             .with_deadline(Duration::from_secs(120)),
             permission_policy: policy,
+            assertions: Default::default(),
         })
         .await
         .unwrap();

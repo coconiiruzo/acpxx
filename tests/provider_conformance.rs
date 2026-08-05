@@ -58,6 +58,7 @@ async fn authenticated_conformance(provider: ProviderId, path_variable: &str, pr
             ))
             .with_deadline(Duration::from_secs(120)),
             permission_policy: PermissionPolicy::Deny,
+            assertions: Default::default(),
         })
         .await
         .unwrap();

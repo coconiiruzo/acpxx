@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ProviderId, ProviderManifest};
+use crate::{ProviderDriver, ProviderId};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DoctorReport {
@@ -33,16 +33,47 @@ pub async fn inspect(socket: &Path, database: &Path) -> DoctorReport {
 }
 
 pub async fn inspect_with_config(socket: &Path, database: &Path, config: &Path) -> DoctorReport {
-    let manifests = [
-        crate::grok_manifest(None),
-        crate::cursor_manifest(None),
-        crate::codex_manifest(None),
-        crate::claude_manifest(None),
-    ];
     let mut checks = Vec::new();
-    for manifest in manifests {
-        checks.push(version_check(&manifest).await);
-        checks.push(authentication_check(manifest.id).await);
+    if config.exists() {
+        match crate::config::ProviderConfig::load(config) {
+            Ok(provider_config) => {
+                for name in provider_config.profiles.keys() {
+                    match provider_config.resolve(name) {
+                        Ok(profile) => match profile.provider_spec.driver() {
+                            Ok(driver) => {
+                                checks
+                                    .push(provider_check(name, &driver, &profile.assertions).await);
+                            }
+                            Err(error) => checks.push(DoctorCheck {
+                                name: format!("profile.{name}"),
+                                status: DoctorStatus::Fail,
+                                message: error.to_string(),
+                            }),
+                        },
+                        Err(error) => checks.push(DoctorCheck {
+                            name: format!("profile.{name}"),
+                            status: DoctorStatus::Fail,
+                            message: error.to_string(),
+                        }),
+                    }
+                }
+            }
+            Err(error) => checks.push(DoctorCheck {
+                name: "config.provider_profiles".into(),
+                status: DoctorStatus::Fail,
+                message: error.to_string(),
+            }),
+        }
+    } else {
+        checks.push(config_check(config));
+    }
+    for provider in [
+        ProviderId::Grok,
+        ProviderId::Cursor,
+        ProviderId::Codex,
+        ProviderId::Claude,
+    ] {
+        checks.push(authentication_check(provider).await);
     }
     checks.push(socket_check(socket));
     checks.push(database_check(database));
@@ -103,7 +134,7 @@ fn config_check(path: &Path) -> DoctorCheck {
                 name: "config.provider_profiles".into(),
                 status: DoctorStatus::Pass,
                 message: format!(
-                    "{} contains {} pinned profiles",
+                    "{} contains {} provider profiles",
                     path.display(),
                     config.profiles.len()
                 ),
@@ -117,19 +148,34 @@ fn config_check(path: &Path) -> DoctorCheck {
     }
 }
 
-async fn version_check(manifest: &ProviderManifest) -> DoctorCheck {
-    match crate::acp::probe_provider_version(manifest).await {
-        Ok(()) => DoctorCheck {
-            name: format!("{}.version", manifest.id),
-            status: DoctorStatus::Pass,
-            message: format!(
-                "{} matches {}",
-                manifest.command.display(),
-                manifest.version_probe.expected()
-            ),
-        },
+async fn provider_check(
+    name: &str,
+    driver: &ProviderDriver,
+    assertions: &crate::ProviderAssertions,
+) -> DoctorCheck {
+    match crate::acp::observe_provider(driver).await {
+        Ok(observed) => {
+            let assertion_result = observed.assertion_result(assertions);
+            let status = if matches!(assertion_result, crate::AssertionResult::Failed { .. }) {
+                DoctorStatus::Fail
+            } else if observed.version.observed().is_some() {
+                DoctorStatus::Pass
+            } else {
+                DoctorStatus::Warning
+            };
+            DoctorCheck {
+                name: format!("profile.{name}"),
+                status,
+                message: format!(
+                    "{} is safe; observed version: {:?}; assertions: {:?}",
+                    observed.executable.display(),
+                    observed.version,
+                    assertion_result
+                ),
+            }
+        }
         Err(failure) => DoctorCheck {
-            name: format!("{}.version", manifest.id),
+            name: format!("profile.{name}"),
             status: DoctorStatus::Fail,
             message: failure.message,
         },
@@ -221,10 +267,10 @@ fn database_check(database: &Path) -> DoctorCheck {
             |row| row.get::<_, i64>(0),
         )
     }) {
-        Ok(1) => DoctorCheck {
+        Ok(3) => DoctorCheck {
             name: "sqlite.metadata_store".into(),
             status: DoctorStatus::Pass,
-            message: format!("{} uses schema version 1", database.display()),
+            message: format!("{} uses schema version 3", database.display()),
         },
         Ok(version) => DoctorCheck {
             name: "sqlite.metadata_store".into(),

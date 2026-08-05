@@ -1,32 +1,21 @@
-# 新計画に対する現状実装差分
+# 実装状況
 
-最終更新: 2026-08-05
+Status: v2.0.0 runtime-compatibility migration complete（2026-08-05）
 
-この表はPhase 0〜18の最終実装記録である。
+実装済み:
 
-| Phase | 状況 | 既存資産 | 主な不足 |
-| ---: | --- | --- | --- |
-| 0 | complete | 4-provider scope、契約、非目標、ADR、compatibility、DoD | なし |
-| 1 | complete | closed ID、UUIDv7 handle、5-state validator、snapshot、admission/failure分離、exhaustive property test | なし |
-| 2 | complete | internal fake ACP、registry、nonblocking actor、event bus、global sequence、failure/permission/flood/cancel/session-change fixture | なし |
-| 3 | complete | 公式ACP SDK、version negotiation、authenticate、session/prompt/update/cancel、permission、root制限filesystem、owned terminal host、bounded output、negotiated capability snapshot | なし |
-| 4 | complete | self-supervisor、watchdog pipe、専用process group、全exit pathのTERM/KILL/reap、stdout drain、child/grandchild test、escape検出fixture、反復lifecycle stress | なし |
-| 5 | complete | Grok実行経路、exact version probe、native ACP command、認証済み実CLI prompt成功、未認証実CLIの`authentication_failed`、supervisor環境allowlist、crash/startup failure分類、process cleanup、段階別metrics | なし |
-| 6 | complete | bounded output、receipt、event-driven `wait_run`、公開event stream、global sequence、tool/reasoning projection、lag diagnostic、slow-consumer stress | なし |
-| 7 | complete | persistent process/session、bounded mailbox、send/followup、session stamp、cutoff、strict continuity、configurable idle TTL | なし |
-| 8 | complete | ACP cancel、queued/running interrupt、deadline統合、grace、force escalation、idempotency、continuity判定 | なし |
-| 9 | complete | strict FIFO scheduler、global/provider別Run上限、completion sequence、event-driven `wait_any/all`、入力順保持、100-Agent stress | なし |
-| 10 | complete | `agentmux serve`、0600 UDS、versioned bounded IPC、全Control/Wait/Watch CLI、共有Agent、stale socket回復、shutdown barrier | なし |
-| 11 | complete | authenticated suite、4 manifest別controlled fault、実provider parent-death cleanup、pinned capability inventoryを固定。broker非対応optional機能も型付きsnapshotで明示 | なし |
-| 12 | complete | Cursor Agent `2026.07.20-8cc9c0b` manifest、auth、stream/followup/output boundary/cancel recovery/shutdown、fault/process/capability audit合格 | なし |
-| 13 | complete | Codex ACP `1.1.9` / bundled Codex `0.145.0` manifest、auth、stream/followup/output boundary/cancel recovery/shutdown、controlled fault、実process audit、実approval allow/deny、Codex metadata projection合格。`read-only` + user reviewerをtested manifestで固定 | なし |
-| 14 | complete | Claude ACP `0.64.2` / Agent SDK `0.3.220` manifest、auth、stream/followup/output boundary/cancel recovery/shutdown、controlled fault、実process audit、実permission allow/deny、permission/terminal/nested-agent metadata envelope合格 | なし |
-| 15 | complete | metadata-only SQLite、redacted terminal receipt、restart reconciliation、旧Agent continuity loss、v0→v1 transactional migration、未来schema/破損DB拒否、daemon標準DB | なし |
-| 16 | complete | 0600 strict profile parser、checksum/version pin、supervisor境界のenvironment allowlist、default-deny permission、secret redaction、bounded stderr/output/IPC、symlink escape拒否、`doctor --json`（version/auth/socket/SQLite/profile） | なし |
-| 17 | complete | Mac Studio release budget、fake 10,000 Run、real 1,000 process、race、stderr/auth/permission/SQLite/socket/process chaosが合格 | なし |
-| 18 | complete | v1.0.0、決定的archive、checksum、SPDX、third-party license、compatibility JSON、Homebrew formula、GitHub/Sigstore署名済みartifact、全利用文書 | なし |
+- Codex / Claude / Grok / Cursorの閉じた4 providerとstable ACP v1
+- Handle-first control API、event stream、pollingなしのwait API
+- 5状態Run machine、Agent actor、mailbox、strict same-session followup
+- cancelからowned process group回収までのinterrupt/deadline経路
+- best-effort version/component観測、optional exact local assertions
+- executable owner/mode/type/hash検査とspawn直前TOCTOU再検査
+- ACP initialize/capability gateと`ProviderExecutionIdentity`のsnapshot/receipt伝播
+- final config schema v2、IPC v2、SQLite schema v3と旧データ移行
+- `provider inspect`、`config migrate`、runtime-oriented `doctor`
+- UDS broker、metadata-only persistence、security bounds/redaction
+- fault/race/chaos/soak/benchmark/reproducible packaging suites
 
-## v1以後の変更
-
-provider pin、公開契約、SQLite schemaまたはprocess ownershipを変更する場合は、
-対応するconformance、互換manifest、ADR、release gateを同じ変更で更新する。
+未知version、非semver、probe failureはassertionがなければ標準経路でACP initializeへ進む。
+provider release追跡は製品責務ではなく、driver contractが破壊された場合だけコード更新を行う。
+実provider auditは認証情報とquotaを使うためmanual/ignored suiteとしてrelease時に実行する。

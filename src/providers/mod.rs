@@ -9,16 +9,16 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{AdmissionError, PermissionPolicy, ProviderId, Task};
+use crate::{AdmissionError, DriverId, PermissionPolicy, ProviderAssertions, ProviderId, Task};
 
-pub use claude::{CLAUDE_ACP_TESTED_VERSION, CLAUDE_AGENT_SDK_TESTED_VERSION, claude_manifest};
-pub use codex::{CODEX_ACP_TESTED_VERSION, CODEX_BUNDLED_TESTED_VERSION, codex_manifest};
-pub use cursor::{CURSOR_TESTED_VERSION, cursor_manifest};
-pub use grok::{GROK_TESTED_VERSION, grok_manifest};
+pub use claude::claude_driver;
+pub use codex::codex_driver;
+pub use cursor::cursor_driver;
+pub use grok::grok_driver;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum AcpVersionPolicy {
+pub enum AcpProtocolPolicy {
     StableV1,
 }
 
@@ -27,39 +27,66 @@ pub struct CapabilitySet(pub Vec<String>);
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
-pub enum VersionProbe {
+pub enum IdentityProbe {
     Semver {
         args: Vec<String>,
-        requirement: semver::VersionReq,
     },
     ExactOutput {
         args: Vec<String>,
-        expected: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        strip_prefix: Option<String>,
     },
 }
 
-impl VersionProbe {
+impl IdentityProbe {
     #[must_use]
-    pub fn expected(&self) -> String {
+    pub fn args(&self) -> &[String] {
         match self {
-            Self::Semver { requirement, .. } => requirement.to_string(),
-            Self::ExactOutput { expected, .. } => expected.clone(),
+            Self::Semver { args } | Self::ExactOutput { args, .. } => args,
         }
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ProviderManifest {
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactProbe {
+    LaunchExecutableSha256 {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        package_metadata: Option<PackageMetadataProbe>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PackageMetadataProbe {
+    pub package_name: String,
+    pub component_dependencies: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ProviderDriver {
     pub id: ProviderId,
+    pub driver_id: DriverId,
+    pub driver_revision: u32,
     pub command: PathBuf,
     pub args: Vec<String>,
-    pub version_probe: VersionProbe,
-    pub protocol: AcpVersionPolicy,
+    pub identity_probe: IdentityProbe,
+    pub artifact_probe: ArtifactProbe,
+    pub protocol: AcpProtocolPolicy,
     pub required_capabilities: CapabilitySet,
     pub allowed_env: Vec<String>,
     pub fixed_env: BTreeMap<String, String>,
     pub preferred_auth_method: Option<String>,
     pub startup_timeout: Duration,
+}
+
+#[must_use]
+pub fn all_provider_drivers() -> [ProviderDriver; 4] {
+    [
+        codex_driver(None),
+        claude_driver(None),
+        grok_driver(None),
+        cursor_driver(None),
+    ]
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -89,12 +116,12 @@ impl ProviderSpec {
         Self::Grok { executable: None }
     }
 
-    pub fn manifest(&self) -> std::result::Result<ProviderManifest, AdmissionError> {
+    pub fn driver(&self) -> std::result::Result<ProviderDriver, AdmissionError> {
         match self {
-            Self::Grok { executable } => Ok(grok_manifest(executable.clone())),
-            Self::Cursor { executable } => Ok(cursor_manifest(executable.clone())),
-            Self::Codex { adapter } => Ok(codex_manifest(adapter.clone())),
-            Self::Claude { adapter } => Ok(claude_manifest(adapter.clone())),
+            Self::Grok { executable } => Ok(grok_driver(executable.clone())),
+            Self::Cursor { executable } => Ok(cursor_driver(executable.clone())),
+            Self::Codex { adapter } => Ok(codex_driver(adapter.clone())),
+            Self::Claude { adapter } => Ok(claude_driver(adapter.clone())),
         }
     }
 
@@ -110,11 +137,14 @@ impl ProviderSpec {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SpawnRequest {
     pub provider: ProviderSpec,
     pub cwd: PathBuf,
     pub task: Task,
     pub permission_policy: PermissionPolicy,
+    #[serde(default)]
+    pub assertions: ProviderAssertions,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -127,8 +157,9 @@ pub struct ListQuery {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ProviderSnapshot {
     pub id: ProviderId,
-    pub protocol: AcpVersionPolicy,
-    pub expected_version: String,
+    pub protocol: AcpProtocolPolicy,
+    pub driver_id: DriverId,
+    pub driver_revision: u32,
     pub required_capabilities: CapabilitySet,
 }
 

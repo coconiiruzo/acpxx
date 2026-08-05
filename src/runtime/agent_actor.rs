@@ -4,13 +4,14 @@ use std::time::{Instant, SystemTime};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::acp::{
-    AcpMetricKind, AcpRunError, AcpSessionCommand, AcpSessionEvent, run_persistent_session,
+    AcpMetricKind, AcpRunError, AcpSessionCommand, AcpSessionEvent, AcpSessionSetup,
+    run_persistent_session,
 };
 use crate::runtime::{Registry, Scheduler, SchedulerPermit};
 use crate::{
     AdmissionError, AgentMessage, AgentSnapshot, CleanupReceipt, Continuity, ContinuityLossReason,
     FailureCode, FollowupTask, InterruptReceipt, MessageId, MessageReceipt, OutputReceipt,
-    ProcessDisposition, ProviderManifest, Result, RunFailure, RunHandle, RunId, RunMetrics,
+    ProcessDisposition, ProviderDriver, Result, RunFailure, RunHandle, RunId, RunMetrics,
     RunReceipt, RunSnapshot, RunStage, SpawnRequest, StopReason, TerminalRunState,
 };
 
@@ -23,9 +24,9 @@ const CANCEL_RETRY_COUNT: u8 = 3;
 #[derive(Debug)]
 pub enum AgentCommand {
     StartInitialRun {
-        snapshot: RunSnapshot,
+        snapshot: Box<RunSnapshot>,
         request: SpawnRequest,
-        manifest: Box<ProviderManifest>,
+        manifest: Box<ProviderDriver>,
     },
     QueueMessage {
         message_id: MessageId,
@@ -41,7 +42,7 @@ pub enum AgentCommand {
         run: RunHandle,
         response: oneshot::Sender<Result<InterruptReceipt>>,
     },
-    SessionEvent(AcpSessionEvent),
+    SessionEvent(Box<AcpSessionEvent>),
     FollowupCapacity {
         run: RunHandle,
         content: String,
@@ -115,6 +116,7 @@ pub async fn run_agent_actor(
                 request,
                 manifest,
             } => {
+                let snapshot = *snapshot;
                 let provider = manifest.id;
                 agent.active_run_id = Some(snapshot.run_id);
                 registry.update_agent(agent.clone()).await;
@@ -140,7 +142,10 @@ pub async fn run_agent_actor(
                 let forward = command_sender.clone();
                 let event_forwarder = tokio::spawn(async move {
                     while let Some(event) = event_receiver.recv().await {
-                        if forward.send(AgentCommand::SessionEvent(event)).is_err() {
+                        if forward
+                            .send(AgentCommand::SessionEvent(Box::new(event)))
+                            .is_err()
+                        {
                             break;
                         }
                     }
@@ -164,11 +169,14 @@ pub async fn run_agent_actor(
                         return;
                     };
                     run_persistent_session(
-                        *manifest,
-                        request.cwd,
-                        request.permission_policy,
-                        initial_run,
-                        permit,
+                        AcpSessionSetup {
+                            driver: *manifest,
+                            cwd: request.cwd,
+                            permission_policy: request.permission_policy,
+                            assertions: request.assertions,
+                            initial_run,
+                            initial_permit: permit,
+                        },
                         session_receiver,
                         event_sender,
                     )
@@ -293,7 +301,7 @@ pub async fn run_agent_actor(
             }
             AgentCommand::SessionEvent(event) => {
                 let had_active_run = active.is_some();
-                handle_session_event(&registry, &mut agent, &mut active, event).await;
+                handle_session_event(&registry, &mut agent, &mut active, *event).await;
                 if had_active_run && active.is_none() && agent.process_alive {
                     restart_idle_timer(&command_sender, idle_ttl, &mut idle_generation);
                 }
@@ -471,6 +479,11 @@ async fn finish_forced_interrupt(
             parent_run_id: current.snapshot.parent_run_id,
             session_stamp: current.snapshot.session_stamp.clone(),
             provider: current.provider,
+            provider_identity: current
+                .snapshot
+                .provider_identity
+                .as_ref()
+                .map(crate::ProviderExecutionIdentity::summary),
             state: TerminalRunState::Interrupted,
             queued_at: current.snapshot.queued_at,
             started_at,
@@ -541,6 +554,16 @@ async fn start_followup(
         agent.continuity = Some(Continuity::Lost(ContinuityLossReason::SessionChanged));
         return Err(AdmissionError::ContinuityAlreadyLost(agent.agent_id).into());
     }
+    if parent.provider_identity.as_ref()
+        != agent
+            .provider_identity
+            .as_ref()
+            .map(crate::ProviderExecutionIdentity::summary)
+            .as_ref()
+    {
+        agent.continuity = Some(Continuity::Lost(ContinuityLossReason::SessionChanged));
+        return Err(AdmissionError::ContinuityAlreadyLost(agent.agent_id).into());
+    }
     if !session_available {
         return Err(AdmissionError::ContinuityAlreadyLost(agent.agent_id).into());
     }
@@ -548,6 +571,7 @@ async fn start_followup(
     let mut snapshot = RunSnapshot::queued(run_id, agent.agent_id, SystemTime::now());
     snapshot.parent_run_id = Some(after);
     snapshot.session_stamp = Some(current_stamp.clone());
+    snapshot.provider_identity = agent.provider_identity.clone();
     let handle = RunHandle {
         agent_id: agent.agent_id,
         run_id,
@@ -652,14 +676,25 @@ async fn handle_session_event(
         AcpSessionEvent::Ready {
             stamp,
             capabilities,
+            identity,
         } => {
             agent.process_alive = true;
             agent.provider_capabilities = Some(capabilities);
+            agent.provider_identity = Some(identity.clone());
             if let Some(current) = active.as_mut() {
                 current.snapshot.session_stamp = Some(stamp.clone());
+                current.snapshot.provider_identity = Some(identity);
                 registry.update_run(current.snapshot.clone()).await;
             }
             agent.continuity = Some(Continuity::Available(stamp));
+            registry.update_agent(agent.clone()).await;
+        }
+        AcpSessionEvent::IdentityObserved { identity } => {
+            agent.provider_identity = Some(identity.clone());
+            if let Some(current) = active.as_mut() {
+                current.snapshot.provider_identity = Some(identity);
+                registry.update_run(current.snapshot.clone()).await;
+            }
             registry.update_agent(agent.clone()).await;
         }
         AcpSessionEvent::RunEvent {
@@ -727,7 +762,11 @@ async fn handle_session_event(
             }
             let process_started = !matches!(
                 failure.as_ref().map(|item| item.code),
-                Some(FailureCode::ProviderSpawnFailed)
+                Some(
+                    FailureCode::ProviderSpawnFailed
+                        | FailureCode::ProviderAssertionFailed
+                        | FailureCode::ProviderArtifactChanged
+                )
             );
             agent.process_alive = false;
             agent.continuity = Some(Continuity::Lost(
@@ -830,6 +869,11 @@ async fn finish_prompt(
             parent_run_id: current.snapshot.parent_run_id,
             session_stamp: current.snapshot.session_stamp.clone(),
             provider: current.provider,
+            provider_identity: current
+                .snapshot
+                .provider_identity
+                .as_ref()
+                .map(crate::ProviderExecutionIdentity::summary),
             state,
             queued_at: current.snapshot.queued_at,
             started_at,

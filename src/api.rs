@@ -110,7 +110,11 @@ impl Broker {
             );
         }
         request.cwd = canonicalize_cwd(&request.cwd)?;
-        let manifest = request.provider.manifest()?;
+        request
+            .assertions
+            .validate()
+            .map_err(AdmissionError::InvalidRequest)?;
+        let manifest = request.provider.driver()?;
 
         let agent_id = crate::AgentId::new();
         let run_id = RunId::new();
@@ -119,6 +123,7 @@ impl Broker {
         let agent = AgentSnapshot {
             agent_id,
             provider: request.provider.id(),
+            provider_identity: None,
             process_alive: false,
             continuity: None,
             provider_capabilities: None,
@@ -146,7 +151,7 @@ impl Broker {
         ));
         commands
             .send(AgentCommand::StartInitialRun {
-                snapshot: run,
+                snapshot: Box::new(run),
                 request,
                 manifest: Box::new(manifest),
             })
@@ -264,20 +269,16 @@ impl Broker {
         agents.sort_by_key(|agent| agent.agent_id);
         runs.sort_by_key(|run| run.run_id);
 
-        let providers = [
-            crate::codex_manifest(None),
-            crate::claude_manifest(None),
-            crate::grok_manifest(None),
-            crate::cursor_manifest(None),
-        ]
-        .into_iter()
-        .map(|manifest| ProviderSnapshot {
-            id: manifest.id,
-            protocol: manifest.protocol,
-            expected_version: manifest.version_probe.expected(),
-            required_capabilities: manifest.required_capabilities,
-        })
-        .collect();
+        let providers = crate::all_provider_drivers()
+            .into_iter()
+            .map(|manifest| ProviderSnapshot {
+                id: manifest.id,
+                protocol: manifest.protocol,
+                driver_id: manifest.driver_id,
+                driver_revision: manifest.driver_revision,
+                required_capabilities: manifest.required_capabilities,
+            })
+            .collect();
         Ok(ListSnapshot {
             agents,
             runs,

@@ -1,0 +1,21 @@
+# v2.0.0 Definition of Done
+
+- [x] Provider set is exactly Codex, Claude, Grok, and Cursor over stable ACP v1.
+- [x] Control and event-driven observation APIs retain handle-first semantics.
+- [x] Run has exactly five states and one Agent has at most one active Run.
+- [x] Unknown/non-semver versions and failed probes proceed when assertions are empty.
+- [x] Optional exact version, component, and launch-digest assertions are enforced before launch.
+- [x] Executable ownership/mode/type/hash and pre-spawn replacement checks are mandatory.
+- [x] ACP protocol and required capabilities are runtime gates; permission policy is version-free.
+- [x] `ProviderExecutionIdentity` reaches Agent/Run snapshots, receipts, IPC, and SQLite.
+- [x] Same-session continuity is strict and never falls back or replays transcripts.
+- [x] Final config schema v2 migrates legacy v1 and transient v2 with private backup/atomic write.
+- [x] SQLite v3 transactionally migrates v1/v2 metadata and discards obsolete authorization state.
+- [x] IPC v2 and CLI expose no removed central-authorization routes or fields.
+- [x] `provider inspect`, `config migrate`, and runtime-oriented `doctor` are implemented.
+- [x] Central data assets, signing/update/discovery workflows, and dedicated dependencies are absent.
+- [x] Packaging contains binary, licenses, docs, SBOM, and checksums—no runtime allowlist data.
+- [x] Prompt/output/session secrets are not persisted; secrets and metadata are bounded/redacted.
+- [x] Child/grandchild cleanup, race, chaos, soak, benchmark, and reproducibility gates pass.
+- [x] `TESTED_PROVIDERS.md` is explicitly observational and never read by runtime code.
+- [x] macOS arm64 v2.0.0 release documentation and migration instructions are complete.

@@ -1,25 +1,19 @@
-# v1 Non-goals
+# v2 Non-goals
 
-Status: frozen for the v1 plan
-Last updated: 2026-08-05
+The following are intentionally outside v2:
 
-The following are deliberately outside the v1 scope:
-
-- active-turn steering through the common API;
-- a custom provider plugin system or public arbitrary-command provider;
-- session migration between providers or provider fallback;
-- transcript replay as simulated continuity;
-- automatic session resume after a provider-process or broker restart;
-- provider-specific CLI protocol parsing;
-- PTY or TUI scraping;
-- Web UI, HTTP API, remote broker, or cloud control plane;
-- distributed scheduling;
-- automatic provider or adapter installation and updates;
-- a common cross-provider sandbox guarantee;
-- storing prompts, output, reasoning, or complete tool payloads by default; and
+- ACP v2, active-turn steering, session resume after process/broker restart, provider/session
+  migration, provider fallback, or transcript replay as continuity;
+- arbitrary/custom provider plugins, registries, user-defined launch args/env, or placeholder
+  provider variants beyond Codex, Claude, Grok, and Cursor;
+- provider release discovery, update notifications, auto-install/update, version channels/ranges,
+  blocklists, vulnerability feeds, or remote telemetry;
+- provider-private CLI parsing, PTY/TUI scraping, or provider subagents becoming independent
+  agentmux Agents;
+- Web UI, HTTP/TCP API, remote/cloud broker, distributed scheduling, or additional release targets;
+- a generalized policy engine or cross-provider sandbox/network guarantee;
+- default persistence of prompts, outputs, reasoning, or complete tool payloads; and
 - claims that Rust orchestration accelerates model inference.
 
-An internal fake ACP executable is required for deterministic runtime and
-conformance tests. It is a test fixture, not a supported provider or extension
-point. Future ideas do not receive empty modules, enum variants, compatibility
-rows, or placeholder APIs in v1.
+The scriptable ACP fixture is test infrastructure, not a public provider or extension point.
+Future ideas receive no empty modules, enum values, compatibility rows, or public shims.

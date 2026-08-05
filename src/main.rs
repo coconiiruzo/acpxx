@@ -21,7 +21,7 @@ struct Cli {
     /// Broker Unix Domain Socket.
     #[arg(long, global = true)]
     socket: Option<PathBuf>,
-    /// Pinned, non-secret provider profile configuration.
+    /// Non-secret provider profile configuration with optional local assertions.
     #[arg(long, global = true)]
     config: Option<PathBuf>,
     #[command(subcommand)]
@@ -110,6 +110,16 @@ enum Command {
     },
     /// Stream live Run events as JSON Lines, followed by the terminal receipt.
     Watch { run: RunId },
+    /// Inspect local provider artifacts without opening an ACP session.
+    Provider {
+        #[command(subcommand)]
+        command: ProviderCommand,
+    },
+    /// Validate or migrate provider profile configuration.
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
     /// Inspect versions, authentication, IPC permissions, and SQLite schema.
     Doctor {
         #[arg(long)]
@@ -148,6 +158,29 @@ enum Command {
         allow_env: Vec<String>,
         #[arg(last = true, required = true)]
         command: Vec<OsString>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ProviderCommand {
+    /// Observe executable safety, identity, digest, and local assertion result.
+    Inspect {
+        profile: String,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ConfigCommand {
+    /// Migrate legacy provider configuration to final schema v2.
+    Migrate {
+        #[arg(long, conflicts_with = "write")]
+        check: bool,
+        #[arg(long, conflicts_with = "check")]
+        write: bool,
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -237,6 +270,7 @@ async fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
                     cwd,
                     task: task_with_deadline(task.join(" "), deadline_ms),
                     permission_policy: permission_policy(permissions),
+                    assertions: Default::default(),
                 })
                 .await?;
             let receipt = broker
@@ -247,6 +281,84 @@ async fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             Ok(exit_for(
                 receipt.state == acpxx::TerminalRunState::Succeeded,
             ))
+        }
+        Command::Provider {
+            command: ProviderCommand::Inspect { profile, json },
+        } => {
+            let resolved = acpxx::config::ProviderConfig::load(&config)?.resolve(&profile)?;
+            let driver = resolved.provider_spec.driver()?;
+            let observed = acpxx::acp::observe_provider(&driver)
+                .await
+                .map_err(|failure| failure.message)?;
+            let assertion_result = observed.assertion_result(&resolved.assertions);
+            let identity = acpxx::ProviderExecutionIdentity {
+                provider: driver.id,
+                driver_id: driver.driver_id,
+                driver_revision: driver.driver_revision,
+                target: acpxx::host_target().into(),
+                executable_path: observed.executable,
+                launch_sha256: observed.launch_sha256,
+                observed_version: observed.version,
+                observed_components: observed.components,
+                acp_protocol_version: None,
+                acp_agent_info: None,
+                capability_digest: None,
+                assertion_result: assertion_result.clone(),
+            };
+            if json {
+                print_json(&identity)?;
+            } else {
+                println!("provider\t{}", identity.provider);
+                println!(
+                    "driver\t{}@{}",
+                    identity.driver_id.0, identity.driver_revision
+                );
+                println!("executable\t{}", identity.executable_path.display());
+                println!("launch_sha256\t{}", identity.launch_sha256);
+                println!("observed_version\t{:?}", identity.observed_version);
+                println!("assertions\t{:?}", identity.assertion_result);
+            }
+            Ok(exit_for(!matches!(
+                assertion_result,
+                acpxx::AssertionResult::Failed { .. }
+            )))
+        }
+        Command::Config {
+            command: ConfigCommand::Migrate { check, write, json },
+        } => {
+            let migration = acpxx::config::check_migration(&config)?;
+            let ready = migration.is_ready();
+            if write {
+                let backup = acpxx::config::write_migration(&config)?;
+                if json {
+                    print_json(&serde_json::json!({
+                        "ready": true,
+                        "written": true,
+                        "backup": backup,
+                        "warnings": migration.warnings,
+                    }))?;
+                } else {
+                    println!("migrated {}", config.display());
+                    println!("backup {}", backup.display());
+                    for warning in migration.warnings {
+                        println!("warning: {warning}");
+                    }
+                }
+            } else if json {
+                print_json(&migration)?;
+            } else {
+                println!("ready\t{ready}");
+                for issue in migration.blocking_issues {
+                    println!("blocking\t{issue}");
+                }
+                for warning in migration.warnings {
+                    println!("warning\t{warning}");
+                }
+                if !check {
+                    println!("hint\tuse --write to replace the config after backup");
+                }
+            }
+            Ok(exit_for(ready))
         }
         Command::Doctor { database, json } => {
             let report = acpxx::doctor::inspect_with_config(
@@ -325,13 +437,21 @@ async fn run_client_command(
             deadline_ms,
             task,
         } => {
-            let (provider, profile_permissions) = match profile {
+            let (provider, profile_permissions, assertions) = match profile {
                 Some(profile) => {
                     let profile =
                         acpxx::config::ProviderConfig::load(config_path)?.resolve(&profile)?;
-                    (profile.provider_spec, profile.permission_policy)
+                    (
+                        profile.provider_spec,
+                        profile.permission_policy,
+                        profile.assertions,
+                    )
                 }
-                None => (provider_spec(provider, executable), PermissionPolicy::Deny),
+                None => (
+                    provider_spec(provider, executable),
+                    PermissionPolicy::Deny,
+                    Default::default(),
+                ),
             };
             let response = client
                 .request(IpcCommand::Spawn(SpawnRequest {
@@ -341,6 +461,7 @@ async fn run_client_command(
                     permission_policy: permissions
                         .map(permission_policy)
                         .unwrap_or(profile_permissions),
+                    assertions,
                 }))
                 .await?;
             print_response(response)
@@ -441,6 +562,8 @@ async fn run_client_command(
         }
         Command::Serve { .. }
         | Command::Run { .. }
+        | Command::Provider { .. }
+        | Command::Config { .. }
         | Command::Doctor { .. }
         | Command::Benchmark { .. }
         | Command::Supervise { .. } => {

@@ -3,8 +3,8 @@ use std::time::{Duration, SystemTime};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgentId, MessageId, ProviderId, RunHandle, RunId, RunStage, SessionStamp, StopReason,
-    TerminalRunState,
+    AgentId, MessageId, ProviderId, ProviderIdentitySummary, RunHandle, RunId, RunStage,
+    SessionStamp, StopReason, TerminalRunState,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -22,6 +22,8 @@ pub enum FailureCode {
     CleanupIncomplete,
     HostShutdown,
     HostRestarted,
+    ProviderAssertionFailed,
+    ProviderArtifactChanged,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -74,6 +76,8 @@ pub struct RunReceipt {
     pub parent_run_id: Option<RunId>,
     pub session_stamp: Option<SessionStamp>,
     pub provider: ProviderId,
+    #[serde(default, alias = "provider_lock")]
+    pub provider_identity: Option<ProviderIdentitySummary>,
     pub state: TerminalRunState,
     pub queued_at: SystemTime,
     pub started_at: SystemTime,

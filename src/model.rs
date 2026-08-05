@@ -251,6 +251,8 @@ pub struct RunSnapshot {
     pub agent_id: AgentId,
     pub parent_run_id: Option<RunId>,
     pub session_stamp: Option<SessionStamp>,
+    #[serde(default)]
+    pub provider_identity: Option<crate::ProviderExecutionIdentity>,
     pub state: RunState,
     pub stage: RunStage,
     pub interrupt_requested: bool,
@@ -269,6 +271,7 @@ impl RunSnapshot {
             agent_id,
             parent_run_id: None,
             session_stamp: None,
+            provider_identity: None,
             state: RunState::Queued,
             stage: RunStage::Admitted,
             interrupt_requested: false,
@@ -307,6 +310,8 @@ impl RunSnapshot {
 pub struct AgentSnapshot {
     pub agent_id: AgentId,
     pub provider: ProviderId,
+    #[serde(default)]
+    pub provider_identity: Option<crate::ProviderExecutionIdentity>,
     pub process_alive: bool,
     pub continuity: Option<Continuity>,
     pub provider_capabilities: Option<Value>,

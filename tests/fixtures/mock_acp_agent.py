@@ -91,6 +91,8 @@ def main():
             mode = mode_match.group(1) if mode_match else "normal"
             delay_match = re.search(r"__fake_delay=([0-9.]+)", prompt)
             delay = float(delay_match.group(1)) if delay_match else 0.0
+            gate_file_match = re.search(r"__fake_gate_file=([^\s\"}]+)", prompt)
+            gate_file_path = gate_file_match.group(1) if gate_file_match else None
             pid_file_match = re.search(r"__fake_pid_file=([^\s\"}]+)", prompt)
             pid_file_path = pid_file_match.group(1) if pid_file_match else None
             if mode == "crash":
@@ -142,6 +144,12 @@ def main():
             print("mock provider log", file=sys.stderr, flush=True)
             if delay:
                 time.sleep(delay)
+            if gate_file_path:
+                gate_deadline = time.monotonic() + 10
+                while not os.path.exists(gate_file_path):
+                    if time.monotonic() >= gate_deadline:
+                        return 28
+                    time.sleep(0.01)
             if mode in ("permission", "permission_allow"):
                 send(
                     {

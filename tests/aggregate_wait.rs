@@ -2,15 +2,16 @@ mod support;
 
 use std::time::Duration;
 
-use acpxx::{Broker, NonEmpty, TerminalRunState, WaitOptions};
+use acpxx::{Broker, NonEmpty, SpawnRequest, Task, TerminalRunState, WaitOptions};
 use support::mock_request;
+use uuid::Uuid;
 
 #[tokio::test]
 async fn wait_any_returns_first_completion_without_cancelling_others() {
     let broker = Broker::new(2);
-    let slow = broker.spawn(mock_request("normal", 0.2)).await.unwrap();
-    wait_for_stage(&broker, slow.run, acpxx::RunStage::Prompting).await;
-    let fast = broker.spawn(mock_request("normal", 0.02)).await.unwrap();
+    let gate = unique_gate("wait-any");
+    let slow = broker.spawn(gated_request(&gate)).await.unwrap();
+    let fast = broker.spawn(mock_request("normal", 0.0)).await.unwrap();
     let mut runs = NonEmpty::new(slow.run);
     runs.tail.push(fast.run);
 
@@ -18,26 +19,34 @@ async fn wait_any_returns_first_completion_without_cancelling_others() {
     assert_eq!(first.run_id, fast.run.run_id);
     assert_eq!(first.state, TerminalRunState::Succeeded);
 
+    std::fs::write(&gate, b"release").unwrap();
     let slow_receipt = broker
         .wait_run(slow.run, WaitOptions::default())
         .await
         .unwrap();
     assert_eq!(slow_receipt.state, TerminalRunState::Succeeded);
+    std::fs::remove_file(gate).unwrap();
 }
 
 #[tokio::test]
 async fn wait_all_preserves_input_order() {
     let broker = Broker::new(2);
-    let slow = broker.spawn(mock_request("normal", 0.15)).await.unwrap();
-    wait_for_stage(&broker, slow.run, acpxx::RunStage::Prompting).await;
-    let fast = broker.spawn(mock_request("normal", 0.01)).await.unwrap();
+    let gate = unique_gate("wait-all");
+    let slow = broker.spawn(gated_request(&gate)).await.unwrap();
+    let fast = broker.spawn(mock_request("normal", 0.0)).await.unwrap();
     let mut runs = NonEmpty::new(slow.run);
     runs.tail.push(fast.run);
 
+    broker
+        .wait_run(fast.run, WaitOptions::default())
+        .await
+        .unwrap();
+    std::fs::write(&gate, b"release").unwrap();
     let receipts = broker.wait_all(runs, WaitOptions::default()).await.unwrap();
     assert_eq!(receipts[0].run_id, slow.run.run_id);
     assert_eq!(receipts[1].run_id, fast.run.run_id);
     assert!(receipts[1].completion_sequence < receipts[0].completion_sequence);
+    std::fs::remove_file(gate).unwrap();
 }
 
 #[tokio::test]
@@ -159,4 +168,17 @@ async fn wait_for_stage(broker: &Broker, run: acpxx::RunHandle, stage: acpxx::Ru
         }
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
+}
+
+fn gated_request(gate: &std::path::Path) -> SpawnRequest {
+    let mut request = mock_request("normal", 0.0);
+    request.task = Task::new(format!(
+        "return the fixture output __fake_mode=normal __fake_gate_file={}",
+        gate.display()
+    ));
+    request
+}
+
+fn unique_gate(label: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("agentmux-{label}-{}.gate", Uuid::now_v7()))
 }

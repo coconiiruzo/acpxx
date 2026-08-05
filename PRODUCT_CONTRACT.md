@@ -1,7 +1,27 @@
 # agentmux Product Contract
 
-Status: frozen for v1.0.0
+Status: frozen for v2.0.0 (v1 control/runtime contract retained)
 Last updated: 2026-08-05
+
+## v2 compatibility-catalog amendment
+
+The v2 line moves provider-version authorization from one compile-time exact
+pin per agentmux release to a signed Compatibility Catalog. This does not
+change the closed four-provider set, ACP v1 transport, handle-first identity,
+Run state machine, mailbox, continuity, interruption, or process-ownership
+contracts.
+
+Provider launch commands, fixed arguments, environment allowlists,
+authentication discovery, permission translation, identity/artifact probes,
+and process workarounds remain compiled `ProviderDriver` behavior. Catalog
+data may authorize exact observed identities and artifact digests for a known
+Driver revision; it cannot provide commands, arguments, paths, environment,
+or permission policy.
+
+Catalog metadata is updated only by an explicit compatibility-update command.
+It never installs or updates a provider executable. Each newly initialized
+Agent receives an immutable `ResolvedProviderLock`; an existing Agent is never
+re-resolved after a Catalog or executable update.
 
 `agentmux` is a handle-first local broker for exactly four coding-agent
 providers: Codex, Claude, Grok, and Cursor. This document defines the v1 product
@@ -156,12 +176,14 @@ provider_spawn_failed  acp_initialize_failed  authentication_failed
 session_create_failed  prompt_failed           provider_crashed
 protocol_corruption    continuity_lost         deadline_exceeded
 cleanup_incomplete     host_shutdown           host_restarted
+catalog_unavailable    provider_not_verified   provider_blocked
+unverified_mutation_denied                     provider_artifact_changed
 ```
 
 ## Persistence and privacy
 
-SQLite stores Agent/Run metadata, terminal receipts, completion sequence, and
-tested provider/adapter versions. Prompt bodies, assistant output, reasoning,
+SQLite schema v2 stores Agent/Run metadata, full Agent provider locks, redacted
+terminal lock summaries, receipts, and completion sequence. Prompt bodies, assistant output, reasoning,
 full tool arguments, secrets, session secrets, and environment values are not
 persisted by default.
 

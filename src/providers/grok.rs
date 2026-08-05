@@ -1,23 +1,23 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use semver::VersionReq;
-
-use super::{AcpVersionPolicy, CapabilitySet, ProviderManifest, VersionProbe};
+use super::{AcpVersionPolicy, ArtifactProbe, CapabilitySet, IdentityProbe, ProviderDriver};
+use crate::DriverId;
 use crate::ProviderId;
 
-pub const GROK_TESTED_VERSION: &str = "0.2.118";
-
 #[must_use]
-pub fn grok_manifest(executable: Option<PathBuf>) -> ProviderManifest {
-    ProviderManifest {
+pub fn grok_driver(executable: Option<PathBuf>) -> ProviderDriver {
+    ProviderDriver {
         id: ProviderId::Grok,
+        driver_id: DriverId::new("grok-native"),
+        driver_revision: 1,
         command: executable.unwrap_or_else(|| PathBuf::from("grok")),
         args: vec!["--no-auto-update".into(), "agent".into(), "stdio".into()],
-        version_probe: VersionProbe::Semver {
+        identity_probe: IdentityProbe::Semver {
             args: vec!["version".into()],
-            requirement: VersionReq::parse(&format!("={GROK_TESTED_VERSION}"))
-                .expect("tested Grok version must be valid semver"),
+        },
+        artifact_probe: ArtifactProbe::LaunchExecutableSha256 {
+            package_metadata: None,
         },
         protocol: AcpVersionPolicy::StableV1,
         required_capabilities: CapabilitySet(Vec::new()),

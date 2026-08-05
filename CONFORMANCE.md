@@ -1,8 +1,8 @@
 # Provider Conformance
 
-Provider promotion uses two complementary black-box suites. Both launch through
-the provider's exact `ProviderManifest`; neither parses a provider-private CLI
-protocol.
+Provider promotion uses two complementary black-box suites. Both resolve an
+exact signed Catalog entry through the provider's `ProviderDriver`; neither
+parses a provider-private CLI protocol.
 
 ## Authenticated provider suite
 
@@ -28,7 +28,7 @@ cargo test --test provider_conformance -- --ignored --test-threads=1
 ## Controlled fault suite
 
 `tests/provider_fault_conformance.rs` connects a scriptable ACP process through
-each of the four exact provider manifests. It checks:
+each of the four provider Drivers under a test Catalog. It checks:
 
 - provider crash classification;
 - malformed protocol classification;
@@ -82,7 +82,7 @@ mutations against isolated paths. For each adapter it verifies that:
 - namespaced provider `_meta` survives in the bounded, secret-redacted event
   envelope.
 
-Codex's tested manifest fixes `INITIAL_AGENT_MODE=read-only`, disables Guardian
+Codex's tested Catalog entry fixes `INITIAL_AGENT_MODE=read-only`, disables Guardian
 auto-approval, and sets `approvals_reviewer=user`; otherwise Codex 0.145.0 can
 approve a mutation before emitting an ACP permission request.
 
@@ -95,7 +95,7 @@ cargo test --test provider_permission_audit -- --ignored
 A provider is `stable` only when:
 
 1. its pinned executable passes the authenticated suite;
-2. its manifest passes every controlled fault case;
+2. its Driver passes every controlled fault case;
 3. every advertised optional capability is either tested through the broker or
    explicitly reported as unsupported by the frozen broker capability snapshot;
    and

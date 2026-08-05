@@ -9,7 +9,7 @@ use acpxx::{
 use support::mock_request;
 
 #[tokio::test]
-async fn public_provider_snapshot_is_the_closed_v1_set() {
+async fn public_provider_snapshot_is_the_closed_four_provider_set() {
     let snapshot = Broker::default().list(ListQuery::default()).await.unwrap();
     let providers: Vec<_> = snapshot
         .providers
@@ -79,6 +79,9 @@ async fn invalid_cwd_is_an_admission_error_and_creates_no_run() {
             cwd: PathBuf::from("/agentmux/path/that/does/not/exist"),
             task: Task::new("test"),
             permission_policy: PermissionPolicy::Deny,
+            version_policy: acpxx::VersionPolicy::Experimental,
+            catalog_entry: None,
+            allow_unverified_mutations: false,
         })
         .await;
     assert!(matches!(

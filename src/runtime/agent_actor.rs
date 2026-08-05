@@ -4,13 +4,14 @@ use std::time::{Instant, SystemTime};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::acp::{
-    AcpMetricKind, AcpRunError, AcpSessionCommand, AcpSessionEvent, run_persistent_session,
+    AcpMetricKind, AcpRunError, AcpSessionCommand, AcpSessionEvent, AcpSessionSetup,
+    run_persistent_session,
 };
 use crate::runtime::{Registry, Scheduler, SchedulerPermit};
 use crate::{
     AdmissionError, AgentMessage, AgentSnapshot, CleanupReceipt, Continuity, ContinuityLossReason,
     FailureCode, FollowupTask, InterruptReceipt, MessageId, MessageReceipt, OutputReceipt,
-    ProcessDisposition, ProviderManifest, Result, RunFailure, RunHandle, RunId, RunMetrics,
+    ProcessDisposition, ProviderDriver, Result, RunFailure, RunHandle, RunId, RunMetrics,
     RunReceipt, RunSnapshot, RunStage, SpawnRequest, StopReason, TerminalRunState,
 };
 
@@ -23,9 +24,9 @@ const CANCEL_RETRY_COUNT: u8 = 3;
 #[derive(Debug)]
 pub enum AgentCommand {
     StartInitialRun {
-        snapshot: RunSnapshot,
+        snapshot: Box<RunSnapshot>,
         request: SpawnRequest,
-        manifest: Box<ProviderManifest>,
+        manifest: Box<ProviderDriver>,
     },
     QueueMessage {
         message_id: MessageId,
@@ -98,6 +99,7 @@ pub async fn run_agent_actor(
     command_sender: mpsc::UnboundedSender<AgentCommand>,
     registry: Arc<Registry>,
     scheduler: Scheduler,
+    catalog: Arc<crate::VerifiedCatalog>,
     mut agent: AgentSnapshot,
     idle_ttl: std::time::Duration,
 ) {
@@ -119,7 +121,7 @@ pub async fn run_agent_actor(
                 agent.active_run_id = Some(snapshot.run_id);
                 registry.update_agent(agent.clone()).await;
                 active = Some(ActiveRun {
-                    snapshot: snapshot.clone(),
+                    snapshot: (*snapshot).clone(),
                     provider,
                     started: Instant::now(),
                     metrics: RunMetrics::default(),
@@ -151,6 +153,7 @@ pub async fn run_agent_actor(
                     run_id: snapshot.run_id,
                 };
                 let scheduler = scheduler.clone();
+                let catalog = catalog.clone();
                 let provider = tokio::spawn(async move {
                     let Some(permit) = scheduler.acquire(provider).await else {
                         let _ = event_sender
@@ -164,11 +167,17 @@ pub async fn run_agent_actor(
                         return;
                     };
                     run_persistent_session(
-                        *manifest,
-                        request.cwd,
-                        request.permission_policy,
-                        initial_run,
-                        permit,
+                        AcpSessionSetup {
+                            driver: *manifest,
+                            cwd: request.cwd,
+                            permission_policy: request.permission_policy,
+                            version_policy: request.version_policy,
+                            catalog_entry: request.catalog_entry,
+                            allow_unverified_mutations: request.allow_unverified_mutations,
+                            catalog,
+                            initial_run,
+                            initial_permit: permit,
+                        },
                         session_receiver,
                         event_sender,
                     )
@@ -471,6 +480,11 @@ async fn finish_forced_interrupt(
             parent_run_id: current.snapshot.parent_run_id,
             session_stamp: current.snapshot.session_stamp.clone(),
             provider: current.provider,
+            provider_lock: current
+                .snapshot
+                .provider_lock
+                .as_ref()
+                .map(|lock| lock.summary()),
             state: TerminalRunState::Interrupted,
             queued_at: current.snapshot.queued_at,
             started_at,
@@ -541,6 +555,16 @@ async fn start_followup(
         agent.continuity = Some(Continuity::Lost(ContinuityLossReason::SessionChanged));
         return Err(AdmissionError::ContinuityAlreadyLost(agent.agent_id).into());
     }
+    let Some(provider_lock) = agent.provider_lock.as_ref() else {
+        agent.continuity = Some(Continuity::Lost(ContinuityLossReason::SessionChanged));
+        return Err(AdmissionError::ContinuityAlreadyLost(agent.agent_id).into());
+    };
+    if current_stamp.provider_profile_fingerprint != provider_lock.canonical_digest()
+        || parent.provider_lock.as_ref() != Some(&provider_lock.summary())
+    {
+        agent.continuity = Some(Continuity::Lost(ContinuityLossReason::SessionChanged));
+        return Err(AdmissionError::ContinuityAlreadyLost(agent.agent_id).into());
+    }
     if !session_available {
         return Err(AdmissionError::ContinuityAlreadyLost(agent.agent_id).into());
     }
@@ -548,6 +572,7 @@ async fn start_followup(
     let mut snapshot = RunSnapshot::queued(run_id, agent.agent_id, SystemTime::now());
     snapshot.parent_run_id = Some(after);
     snapshot.session_stamp = Some(current_stamp.clone());
+    snapshot.provider_lock = Some(provider_lock.clone());
     let handle = RunHandle {
         agent_id: agent.agent_id,
         run_id,
@@ -662,6 +687,14 @@ async fn handle_session_event(
             agent.continuity = Some(Continuity::Available(stamp));
             registry.update_agent(agent.clone()).await;
         }
+        AcpSessionEvent::Resolved { provider_lock } => {
+            agent.provider_lock = Some(provider_lock.clone());
+            if let Some(current) = active.as_mut() {
+                current.snapshot.provider_lock = Some(provider_lock);
+                registry.update_run(current.snapshot.clone()).await;
+            }
+            registry.update_agent(agent.clone()).await;
+        }
         AcpSessionEvent::RunEvent {
             run,
             kind,
@@ -727,7 +760,14 @@ async fn handle_session_event(
             }
             let process_started = !matches!(
                 failure.as_ref().map(|item| item.code),
-                Some(FailureCode::ProviderSpawnFailed)
+                Some(
+                    FailureCode::ProviderSpawnFailed
+                        | FailureCode::CatalogUnavailable
+                        | FailureCode::ProviderNotVerified
+                        | FailureCode::ProviderBlocked
+                        | FailureCode::UnverifiedMutationDenied
+                        | FailureCode::ProviderArtifactChanged
+                )
             );
             agent.process_alive = false;
             agent.continuity = Some(Continuity::Lost(
@@ -830,6 +870,11 @@ async fn finish_prompt(
             parent_run_id: current.snapshot.parent_run_id,
             session_stamp: current.snapshot.session_stamp.clone(),
             provider: current.provider,
+            provider_lock: current
+                .snapshot
+                .provider_lock
+                .as_ref()
+                .map(|lock| lock.summary()),
             state,
             queued_at: current.snapshot.queued_at,
             started_at,

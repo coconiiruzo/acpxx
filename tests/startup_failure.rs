@@ -17,6 +17,9 @@ async fn missing_provider_fails_through_wait_run() {
             cwd: PathBuf::from(env!("CARGO_MANIFEST_DIR")),
             task: Task::new("test"),
             permission_policy: PermissionPolicy::Deny,
+            version_policy: acpxx::VersionPolicy::Experimental,
+            catalog_entry: None,
+            allow_unverified_mutations: false,
         })
         .await
         .unwrap();
@@ -47,6 +50,9 @@ async fn missing_cursor_binary_fails_through_the_run_receipt() {
             cwd: PathBuf::from(env!("CARGO_MANIFEST_DIR")),
             task: Task::new("test"),
             permission_policy: PermissionPolicy::Deny,
+            version_policy: acpxx::VersionPolicy::Experimental,
+            catalog_entry: None,
+            allow_unverified_mutations: false,
         })
         .await
         .unwrap();
@@ -65,12 +71,10 @@ async fn missing_cursor_binary_fails_through_the_run_receipt() {
 #[cfg(unix)]
 #[tokio::test]
 async fn missing_required_auth_method_is_an_authentication_failure() {
-    use std::os::unix::fs::symlink;
-
     let fixture =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mock_acp_agent.py");
     let link = std::env::temp_dir().join(format!("agentmux-no_auth-{}", Uuid::now_v7()));
-    symlink(&fixture, &link).unwrap();
+    std::fs::hard_link(&fixture, &link).unwrap();
     let broker = Broker::new(1);
     let spawned = broker
         .spawn(SpawnRequest {
@@ -80,6 +84,9 @@ async fn missing_required_auth_method_is_an_authentication_failure() {
             cwd: PathBuf::from(env!("CARGO_MANIFEST_DIR")),
             task: Task::new("test"),
             permission_policy: PermissionPolicy::Deny,
+            version_policy: acpxx::VersionPolicy::Experimental,
+            catalog_entry: None,
+            allow_unverified_mutations: false,
         })
         .await
         .unwrap();

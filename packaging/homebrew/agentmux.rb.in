@@ -14,5 +14,6 @@ class Agentmux < Formula
 
   test do
     assert_match version.to_s, shell_output("#{bin}/agentmux --version")
+    assert_match "agentmux-official", shell_output("#{bin}/agentmux compatibility status")
   end
 end

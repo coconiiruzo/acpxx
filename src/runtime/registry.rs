@@ -15,7 +15,7 @@ const EVENT_CHANNEL_CAPACITY: usize = 1_024;
 
 #[derive(Clone, Debug)]
 pub enum RunObservation {
-    Active(RunSnapshot),
+    Active(Box<RunSnapshot>),
     Terminal(Arc<RunReceipt>),
 }
 
@@ -94,7 +94,7 @@ impl Registry {
                     sender: event_sender,
                 },
             );
-        let (sender, _) = watch::channel(RunObservation::Active(snapshot));
+        let (sender, _) = watch::channel(RunObservation::Active(Box::new(snapshot)));
         self.runs.write().await.insert(run_id, RunEntry { sender });
     }
 
@@ -162,7 +162,9 @@ impl Registry {
     pub async fn update_run(&self, snapshot: RunSnapshot) {
         self.persist_run_snapshot(&snapshot);
         if let Some(entry) = self.runs.read().await.get(&snapshot.run_id) {
-            entry.sender.send_replace(RunObservation::Active(snapshot));
+            entry
+                .sender
+                .send_replace(RunObservation::Active(Box::new(snapshot)));
         }
     }
 
@@ -241,12 +243,13 @@ impl Registry {
             .await
             .values()
             .map(|entry| match &*entry.sender.borrow() {
-                RunObservation::Active(snapshot) => snapshot.clone(),
+                RunObservation::Active(snapshot) => snapshot.as_ref().clone(),
                 RunObservation::Terminal(receipt) => RunSnapshot {
                     run_id: receipt.run_id,
                     agent_id: receipt.agent_id,
                     parent_run_id: receipt.parent_run_id,
                     session_stamp: receipt.session_stamp.clone(),
+                    provider_lock: None,
                     state: receipt.state.into(),
                     stage: crate::RunStage::Terminal,
                     interrupt_requested: false,

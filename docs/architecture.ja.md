@@ -348,6 +348,31 @@ mailbox、interrupt、permission、process ownership、compatibility、troublesh
 performance、upgrade policyを完成させる。最終判定は
 [`V1_DEFINITION_OF_DONE.md`](../V1_DEFINITION_OF_DONE.md)だけを基準にする。
 
+## v2 — Provider Compatibility Catalog
+
+v2では`ProviderDriver`がcommand、固定引数、identity/artifact probeを所有し、
+provider versionを許可しない。署名済みCatalog snapshotをdeny-first resolverへ渡し、
+process起動前に`ResolvedProviderLock`を確定する。Agent actorはそのsnapshotとlockを
+process/session lifetime全体で保持するため、Catalog reload後も既存followupは変化しない。
+
+```text
+explicit compatibility update
+  -> exact-byte Ed25519 verification
+  -> schema/expiry/sequence/Driver validation
+  -> immutable cache generation + atomic state pointer
+  -> IPC v2 reload
+  -> future spawn snapshots only
+
+spawn
+  -> ProviderDriver probes
+  -> blocked deny-first Catalog resolution
+  -> immutable lock + launch-time file identity recheck
+  -> owned ACP process/session
+```
+
+normal `serve`/`spawn`はnetworkへ接続しない。SQLite schema v2はfull Agent lockと
+receipt summaryを保持するが、v1 recordのlockを現在のCatalogから推測しない。
+
 ## 4. 依存関係と開発規則
 
 ```text

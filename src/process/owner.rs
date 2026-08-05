@@ -1,6 +1,6 @@
 use agent_client_protocol::{AcpAgent, AcpAgentConfig};
 
-use crate::ProviderManifest;
+use crate::ProviderDriver;
 
 /// Builds the owned ACP process endpoint.
 ///
@@ -8,12 +8,12 @@ use crate::ProviderManifest;
 /// mode. Test binaries use the SDK's process-group ownership directly.
 #[derive(Debug)]
 pub struct ProcessTreeOwner {
-    manifest: ProviderManifest,
+    manifest: ProviderDriver,
 }
 
 impl ProcessTreeOwner {
     #[must_use]
-    pub fn new(manifest: ProviderManifest) -> Self {
+    pub fn new(manifest: ProviderDriver) -> Self {
         Self { manifest }
     }
 

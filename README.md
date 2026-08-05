@@ -9,11 +9,10 @@ Cursor**. The Rust package still uses the repository name `acpxx`; its single
 distributed executable is named `agentmux`. Provider execution uses stable ACP
 v1 and exact-version manifests for Grok, Cursor, Codex, and Claude.
 
-> Status: v1.0 release candidate. The runtime, all four stable provider
-> integrations, authenticated conformance, persistence, security hardening,
-> performance/race/soak/chaos qualification, and reproducible release tooling
-> are implemented. Publishing the signed `v1.0.0` tag artifact is the remaining
-> external release action.
+> Status: v1.0.0. The runtime, all four stable provider integrations,
+> authenticated conformance, persistence, security hardening,
+> performance/race/soak/chaos qualification, and reproducible signed release
+> artifacts are complete.
 
 Grok CLI `0.2.118`, Cursor Agent `2026.07.20-8cc9c0b`, Codex ACP `1.1.9` with
 bundled Codex `0.145.0`, and Claude ACP `0.64.2` with Agent SDK `0.3.220`

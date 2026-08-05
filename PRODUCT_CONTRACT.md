@@ -1,6 +1,6 @@
 # agentmux Product Contract
 
-Status: v1 contract candidate
+Status: frozen for v1.0.0
 Last updated: 2026-08-05
 
 `agentmux` is a handle-first local broker for exactly four coding-agent

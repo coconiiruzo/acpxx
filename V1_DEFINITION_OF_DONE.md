@@ -48,7 +48,7 @@
 - [x] Race, soak, and chaos gates report no invariant violation, orphan, lost
       notification, unbounded queue, or broker-wide panic.
 - [x] The documented performance budget is met on the reference host.
-- [ ] A reproducible, signed macOS arm64 artifact, checksum, SBOM, third-party
+- [x] A reproducible, signed macOS arm64 artifact, checksum, SBOM, third-party
       license list, and versioned compatibility manifest are published.
 - [x] Installation, provider setup, authentication, CLI/API, lifecycle,
       continuity, security, troubleshooting, and upgrade documentation is complete.

@@ -2,8 +2,7 @@
 
 最終更新: 2026-08-05
 
-この表は実装とrelease actionを分けたgap記録である。各PhaseのExit Gateをすべて
-満たすまで`complete`にはしない。
+この表はPhase 0〜18の最終実装記録である。
 
 | Phase | 状況 | 既存資産 | 主な不足 |
 | ---: | --- | --- | --- |
@@ -25,12 +24,9 @@
 | 15 | complete | metadata-only SQLite、redacted terminal receipt、restart reconciliation、旧Agent continuity loss、v0→v1 transactional migration、未来schema/破損DB拒否、daemon標準DB | なし |
 | 16 | complete | 0600 strict profile parser、checksum/version pin、supervisor境界のenvironment allowlist、default-deny permission、secret redaction、bounded stderr/output/IPC、symlink escape拒否、`doctor --json`（version/auth/socket/SQLite/profile） | なし |
 | 17 | complete | Mac Studio release budget、fake 10,000 Run、real 1,000 process、race、stderr/auth/permission/SQLite/socket/process chaosが合格 | なし |
-| 18 | partial | v1.0.0 version、決定的archive、checksum、SPDX、third-party license、compatibility JSON、Homebrew formula、GitHub/Sigstore attestation workflow、全利用文書 | `v1.0.0` tagをpushして署名済みartifactを公開する外部release action |
+| 18 | complete | v1.0.0、決定的archive、checksum、SPDX、third-party license、compatibility JSON、Homebrew formula、GitHub/Sigstore署名済みartifact、全利用文書 | なし |
 
-## 次の変更単位
+## v1以後の変更
 
-1. 全local gateとrelease archiveの再現性を再検証する。
-2. maintainerが`v1.0.0` tagをpushし、署名済みartifactを公開する。
-
-依存順を飛び越えて実装済みの機能があっても、その前提PhaseのExit Gateが閉じるまで
-stableとは扱わない。
+provider pin、公開契約、SQLite schemaまたはprocess ownershipを変更する場合は、
+対応するconformance、互換manifest、ADR、release gateを同じ変更で更新する。

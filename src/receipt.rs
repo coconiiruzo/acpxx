@@ -3,28 +3,25 @@ use std::time::{Duration, SystemTime};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgentId, MessageId, ProviderId, RunHandle, RunId, RunStage, StopReason, TerminalRunState,
+    AgentId, MessageId, ProviderId, RunHandle, RunId, RunStage, SessionStamp, StopReason,
+    TerminalRunState,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FailureCode {
-    AdapterNotFound,
-    AdapterVersionMismatch,
-    AdapterSpawnFailed,
+    ProviderSpawnFailed,
     AcpInitializeFailed,
-    AcpVersionMismatch,
+    AuthenticationFailed,
     SessionCreateFailed,
-    PromptRejected,
-    PermissionDenied,
+    PromptFailed,
     ProtocolCorruption,
-    TransportClosed,
     ProviderCrashed,
     ContinuityLost,
-    RunTimeout,
-    InterruptTimeout,
+    DeadlineExceeded,
     CleanupIncomplete,
     HostShutdown,
+    HostRestarted,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -57,9 +54,15 @@ pub struct CleanupReceipt {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RunMetrics {
     pub total: Duration,
     pub provider_probe: Duration,
+    pub adapter_spawn: Duration,
+    pub acp_initialize: Duration,
+    pub authentication: Duration,
+    pub session_new: Duration,
+    pub first_output: Duration,
     pub model_and_tools: Duration,
     pub cleanup: Duration,
 }
@@ -69,11 +72,13 @@ pub struct RunReceipt {
     pub run_id: RunId,
     pub agent_id: AgentId,
     pub parent_run_id: Option<RunId>,
+    pub session_stamp: Option<SessionStamp>,
     pub provider: ProviderId,
     pub state: TerminalRunState,
     pub queued_at: SystemTime,
     pub started_at: SystemTime,
     pub finished_at: SystemTime,
+    pub completion_sequence: u64,
     pub stop_reason: StopReason,
     pub failure: Option<RunFailure>,
     pub session_epoch: u64,

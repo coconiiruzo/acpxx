@@ -1,0 +1,38 @@
+# Installation
+
+agentmux v1 supports macOS arm64. Provider CLIs and ACP adapters are separate
+executables and are not downloaded or updated by agentmux.
+
+## Release archive
+
+Download the `agentmux-VERSION-aarch64-apple-darwin.tar.gz`, `SHA256SUMS`, and
+the corresponding SPDX file from the GitHub release. Verify both the checksum
+and its GitHub/Sigstore build-provenance attestation before installation:
+
+```bash
+shasum -a 256 -c SHA256SUMS
+gh attestation verify agentmux-VERSION-aarch64-apple-darwin.tar.gz \
+  -R coconiiruzo/acpxx
+tar -xzf agentmux-VERSION-aarch64-apple-darwin.tar.gz
+install -m 0755 agentmux-VERSION-aarch64-apple-darwin/agentmux /usr/local/bin/agentmux
+agentmux --version
+```
+
+The release also contains `agentmux.rb`, a checksum-bound Homebrew formula:
+
+```bash
+brew install --formula ./agentmux.rb
+```
+
+## Source build
+
+Rust 1.88 or newer, Python 3.11 or newer, and the macOS command-line tools are
+required. A locked source build is:
+
+```bash
+cargo build --locked --release
+install -m 0755 target/release/agentmux /usr/local/bin/agentmux
+```
+
+After installing, configure a pinned provider profile, start `agentmux serve`,
+and run `agentmux doctor --json`. See [Provider setup](provider-setup.md).

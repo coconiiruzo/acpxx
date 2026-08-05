@@ -1,14 +1,23 @@
-# acpxx
+# acpxx / agentmux
 
-`acpxx` is a handle-first local broker for coding agents that speak the
+`agentmux` is the target product name for this repository's handle-first local
+broker for coding agents that speak the
 [Agent Client Protocol (ACP)](https://agentclientprotocol.com/).
 
-The long-term target is one control API for Codex, Claude, Grok, Cursor, and
-Antigravity. The first vertical slice is intentionally narrower: **stable ACP
-v1, Grok only, one-shot runs**.
+The v1 target is one closed control API for exactly **Codex, Claude, Grok, and
+Cursor**. The Rust package still uses the repository name `acpxx`; its single
+distributed executable is named `agentmux`. Provider execution uses stable ACP
+v1 and exact-version manifests for Grok, Cursor, Codex, and Claude.
 
-> Status: early v0.1 development. The domain contract is frozen, but only
-> `spawn`, `list`, and `wait_run` execute today.
+> Status: v1.0 release candidate. The runtime, all four stable provider
+> integrations, authenticated conformance, persistence, security hardening,
+> performance/race/soak/chaos qualification, and reproducible release tooling
+> are implemented. Publishing the signed `v1.0.0` tag artifact is the remaining
+> external release action.
+
+Grok CLI `0.2.118`, Cursor Agent `2026.07.20-8cc9c0b`, Codex ACP `1.1.9` with
+bundled Codex `0.145.0`, and Claude ACP `0.64.2` with Agent SDK `0.3.220`
+currently satisfy the stable provider gate.
 
 ## Why
 
@@ -42,7 +51,8 @@ spawn
   -> ACP initialize (v1)
   -> session/new
   -> session/prompt + streamed session/update collection
-  -> process-group cleanup
+  -> persistent same-session follow-up
+  -> interrupt/deadline escalation
   -> terminal receipt published to wait_run
 ```
 
@@ -51,37 +61,55 @@ timeout only stops the caller from waiting and does not cancel the run.
 
 ### Operation matrix
 
-| Operation | Contract | v0.1 implementation |
+| Operation | Contract | v1 implementation |
 | --- | --- | --- |
-| `spawn` | Create Agent, process/session, and initial Run | yes, one-shot Grok |
-| `send` | Queue mailbox message without starting a Run | Phase 2 |
-| `followup` | Start a new Run on the same ACP session | Phase 2 |
-| `interrupt` | Cancel one Run | Phase 3 |
+| `spawn` | Create Agent, process/session, and initial Run | yes, persistent Grok |
+| `send` | Queue mailbox message without starting a Run | yes, bounded mailbox |
+| `followup` | Start a new Run on the same ACP session | yes, strict session stamp |
+| `interrupt` | Cancel one Run | yes, cancel then owned-process escalation |
 | `list` | Snapshot Agents, Runs, and provider expectations | yes |
 | `wait_run` | Wait for one terminal receipt | yes |
-| `wait_any` / `wait_all` | Aggregate non-polling waits | Phase 4 |
+| `events` | Observe a Run's ordered event stream | yes, bounded stream |
+| `wait_any` / `wait_all` | Aggregate non-polling waits | yes |
 
 ## Run it
 
 Prerequisites:
 
 - Rust 1.88 or newer
-- Grok CLI `0.2.118`, authenticated locally or with `XAI_API_KEY`
+- At least one pinned, authenticated provider executable listed in
+  [Provider compatibility](PROVIDER_COMPATIBILITY.md)
 
 ```bash
 cargo build
-cargo run -- run --cwd . "Reply with a one-line summary of this repository"
+target/debug/agentmux serve \
+  --provider-limit grok=2 \
+  --provider-limit codex=4
+target/debug/agentmux spawn --provider grok --cwd . \
+  "Reply with a one-line summary of this repository"
+target/debug/agentmux spawn --profile grok-default --cwd . \
+  "Run the pinned Grok profile"
+target/debug/agentmux wait RUN_UUID
+target/debug/agentmux doctor --json
+target/release/agentmux benchmark --enforce --json
 ```
 
 Mutation permissions are denied by default. To explicitly allow every provider
 permission request:
 
 ```bash
-cargo run -- run --permissions allow-all "Create a file named hello.txt"
+target/debug/agentmux spawn --permissions allow-all "Create hello.txt"
 ```
 
-The command prints a JSON `RunReceipt` containing terminal state, failure
-taxonomy, output, timings, and cleanup disposition.
+Provider profiles are loaded from `~/.config/agentmux/providers.toml` by
+default. The file must be a regular file with mode `0600`; unknown fields,
+untested versions, checksum mismatches, and non-v1 protocol locks are rejected.
+Only each provider manifest's allowlisted environment variables cross the
+supervisor boundary.
+
+`spawn` prints the Agent/Run handles. `wait` prints a JSON `RunReceipt`
+containing terminal state, failure taxonomy, output, timings, and cleanup
+disposition.
 
 ## Invariants
 
@@ -92,8 +120,8 @@ taxonomy, output, timings, and cleanup disposition.
 - Startup failures are reported through the normal terminal receipt path.
 - stdout belongs exclusively to ACP; provider logs are read from bounded
   stderr capture in the official SDK.
-- A one-shot receipt is published only after the provider process group has
-  been terminated and reaped.
+- Successful Runs retain their live provider session; broker shutdown and force
+  interrupt wait for the owned process tree to be terminated and reaped.
 - No session replay, provider fallback, CLI output scraping, or automatic
   adapter installation is permitted.
 
@@ -111,18 +139,30 @@ documented native endpoint `grok --no-auto-update agent stdio`. See the
 
 ## Scope and roadmap
 
-- Phase 0: domain contract, state machine, receipts, provider manifest — done
-- Phase 1: Grok one-shot ACP vertical slice — done
-- Phase 2: persistent Agent, mailbox, follow-up, strict continuity
-- Phase 3: interrupt, deadlines, parent-death supervisor, Windows Job Object
-- Phase 4: aggregate waits and cross-Agent concurrency tests
-- Phase 5: Cursor, Codex, then Claude via conformance-tested manifests
-- Phase 6: Antigravity experimental evaluation
-- Phase 7: doctor, release hardening, soak tests, and compatibility matrix
+The authoritative roadmap has Phases 0 through 18. It separates the fake ACP
+runtime, host services, owned-process lifecycle, Grok E2E, observation APIs,
+continuity, interruption, aggregate waits, daemon/IPC, conformance, each
+provider integration, persistence, hardening, and release packaging.
 
-Read [the architecture plan](docs/architecture.ja.md) and
-[ADR-0001](docs/adr/0001-handle-first-acp-runtime.md) for the decisions behind
-that sequence.
+Read:
+
+- [Installation](docs/installation.md)
+- [Provider setup and authentication](docs/provider-setup.md)
+- [CLI reference](docs/cli-reference.md)
+- [Rust API](docs/rust-api.md)
+- [Lifecycle semantics](docs/lifecycle-semantics.md)
+- [Troubleshooting](docs/troubleshooting.md)
+- [Upgrade policy](docs/upgrade-policy.md)
+- [Release procedure](docs/release.md)
+- [Product contract](PRODUCT_CONTRACT.md)
+- [v1 non-goals](NON_GOALS.md)
+- [Architecture and phase plan](docs/architecture.ja.md)
+- [Current implementation gap](docs/status.ja.md)
+- [Provider compatibility](PROVIDER_COMPATIBILITY.md)
+- [Provider conformance](CONFORMANCE.md)
+- [Performance qualification](PERFORMANCE.md)
+- [v1 Definition of Done](V1_DEFINITION_OF_DONE.md)
+- [ADR-0001](docs/adr/0001-handle-first-acp-runtime.md)
 
 ## Development
 
@@ -132,8 +172,9 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets
 ```
 
-The test suite includes a black-box mock ACP process. A real Grok run is a
-manual authenticated smoke test and is not required in CI.
+The test suite includes a black-box mock ACP process. Authenticated provider
+audits are explicit ignored/manual suites because CI does not receive provider
+credentials. The release gate requires those suites on the pinned environment.
 
 ## License
 

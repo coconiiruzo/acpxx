@@ -131,6 +131,38 @@ session_new_verified = true
 }
 
 #[test]
+fn v1_grok_profile_must_use_the_v1_driver_args() {
+    let path = config_path();
+    let executable = fixture_executable();
+    write_config(
+        &path,
+        &format!(
+            r#"[profiles.grok-default]
+provider = "grok"
+executable = "{}"
+args = ["--no-auto-update", "--permission-mode", "default", "agent", "--no-leader", "stdio"]
+version = "0.2.118"
+sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+authentication = "cached"
+initialize_verified = true
+session_new_verified = true
+"#,
+            executable.display()
+        ),
+    );
+    let migration = acpxx::config::check_migration(&path).unwrap();
+    assert!(!migration.is_ready());
+    assert!(
+        migration
+            .blocking_issues
+            .iter()
+            .any(|issue| issue.contains("legacy args differ from the v1 Grok driver")),
+        "{:?}",
+        migration.blocking_issues
+    );
+}
+
+#[test]
 fn catalog_v2_floating_and_exact_profiles_migrate_offline() {
     let path = config_path();
     let executable = fixture_executable();

@@ -5,16 +5,15 @@ use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     AuthenticateRequest, CancelNotification, ClientCapabilities, ContentBlock, ContentChunk,
     CreateTerminalRequest, FileSystemCapabilities, InitializeRequest, KillTerminalRequest,
-    NewSessionRequest, PermissionOptionKind, PromptRequest, ReadTextFileRequest,
-    ReleaseTerminalRequest, RequestPermissionOutcome, RequestPermissionRequest,
-    RequestPermissionResponse, SelectedPermissionOutcome, SessionNotification, SessionUpdate,
+    NewSessionRequest, PromptRequest, ReadTextFileRequest, ReleaseTerminalRequest,
+    RequestPermissionRequest, RequestPermissionResponse, SessionNotification, SessionUpdate,
     TerminalOutputRequest, WaitForTerminalExitRequest, WriteTextFileRequest,
 };
 use agent_client_protocol::{Agent, Client, ConnectionTo};
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
-use super::client::{OutputAccumulator, classify_acp_error, map_stop_reason};
+use super::client::{OutputAccumulator, classify_acp_error, map_stop_reason, permission_outcome};
 use crate::acp::{AcpRunError, FileSystemHost, OneShotAcpOutcome, TerminalHost};
 use crate::process::ProcessTreeOwner;
 use crate::runtime::SchedulerPermit;
@@ -344,26 +343,10 @@ pub(crate) async fn run_persistent_session(
                         })
                         .await;
                 }
-                match permission_policy {
-                    PermissionPolicy::Deny => responder.respond(RequestPermissionResponse::new(
-                        RequestPermissionOutcome::Cancelled,
-                    )),
-                    PermissionPolicy::AllowAll => match request.options.iter().find(|option| {
-                        matches!(
-                            option.kind,
-                            PermissionOptionKind::AllowOnce | PermissionOptionKind::AllowAlways
-                        )
-                    }) {
-                        Some(option) => responder.respond(RequestPermissionResponse::new(
-                            RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
-                                option.option_id.clone(),
-                            )),
-                        )),
-                        None => responder.respond(RequestPermissionResponse::new(
-                            RequestPermissionOutcome::Cancelled,
-                        )),
-                    },
-                }
+                responder.respond(RequestPermissionResponse::new(permission_outcome(
+                    permission_policy,
+                    &request.options,
+                )))
             },
             agent_client_protocol::on_receive_request!(),
         )

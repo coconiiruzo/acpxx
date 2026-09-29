@@ -8,6 +8,9 @@ use crate::{PermissionPolicy, ProviderAssertions, ProviderId, ProviderSpec};
 
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 pub const CONFIG_SCHEMA_VERSION: u32 = 2;
+/// Launch arguments of the v1 Grok driver. Legacy profiles recorded them explicitly; the current
+/// driver owns its arguments, so migration only accepts profiles that used these.
+const LEGACY_V1_GROK_ARGS: [&str; 3] = ["--no-auto-update", "agent", "stdio"];
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -374,12 +377,8 @@ fn migrate_v1_profile(
             session_new_verified,
             permissions,
         } => {
-            if !args
-                .iter()
-                .map(String::as_str)
-                .eq(["--no-auto-update", "agent", "stdio"])
-            {
-                return Err(invalid(name, "legacy args differ from the built-in Driver"));
+            if !args.iter().map(String::as_str).eq(LEGACY_V1_GROK_ARGS) {
+                return Err(invalid(name, "legacy args differ from the v1 Grok driver"));
             }
             (
                 ProviderProfile::Grok {

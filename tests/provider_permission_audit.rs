@@ -18,6 +18,7 @@ async fn codex_real_approval_allow_and_deny() {
         ProviderId::Codex,
         "AGENTMUX_CODEX_ACP_PATH",
         "codex-default",
+        WriteTool::Any,
     )
     .await;
 }
@@ -29,11 +30,45 @@ async fn claude_real_permission_allow_and_deny() {
         ProviderId::Claude,
         "AGENTMUX_CLAUDE_ACP_PATH",
         "claude-default",
+        WriteTool::Any,
     )
     .await;
 }
 
-async fn permission_audit(provider: ProviderId, variable: &str, profile: &str) {
+#[tokio::test]
+#[ignore = "executes an authenticated Grok permission allow/deny audit"]
+async fn grok_real_permission_allow_and_deny() {
+    permission_audit(
+        ProviderId::Grok,
+        "AGENTMUX_GROK_PATH",
+        "grok-default",
+        WriteTool::Any,
+    )
+    .await;
+}
+
+#[tokio::test]
+#[ignore = "executes an authenticated Grok shell permission allow/deny audit"]
+async fn grok_real_shell_permission_allow_and_deny() {
+    permission_audit(
+        ProviderId::Grok,
+        "AGENTMUX_GROK_PATH",
+        "grok-default",
+        WriteTool::Shell,
+    )
+    .await;
+}
+
+/// How the audited mutation is requested. The shell audit exercises Grok's own process under
+/// `deny` and the ACP terminal host, including the argument-less `/bin/sh -c` shell-line path,
+/// under `allow-all`, so the shell path needs its own audit.
+#[derive(Clone, Copy)]
+enum WriteTool {
+    Any,
+    Shell,
+}
+
+async fn permission_audit(provider: ProviderId, variable: &str, profile: &str, tool: WriteTool) {
     let fixture = PermissionFixture::new(provider);
     let denied = fixture.target_directory.join("denied.txt");
     let deny_event = run_write_attempt(
@@ -43,6 +78,7 @@ async fn permission_audit(provider: ProviderId, variable: &str, profile: &str) {
         &fixture.workspace,
         &denied,
         PermissionPolicy::Deny,
+        tool,
     )
     .await;
     assert!(!denied.exists(), "{provider} mutated the denied path");
@@ -60,6 +96,7 @@ async fn permission_audit(provider: ProviderId, variable: &str, profile: &str) {
         &fixture.workspace,
         &allowed,
         PermissionPolicy::AllowAll,
+        tool,
     )
     .await;
     assert!(matches!(
@@ -101,16 +138,23 @@ async fn run_write_attempt(
     cwd: &Path,
     target: &Path,
     policy: PermissionPolicy,
+    tool: WriteTool,
 ) -> RunEvent {
     let broker = Broker::new(1);
     let spawned = broker
         .spawn(SpawnRequest {
             provider: pinned_provider_spec(provider, variable, profile),
             cwd: cwd.to_owned(),
-            task: Task::new(format!(
-                "Use your normal shell or file tool to write exactly agentmux-permission-ok to {}. Do not merely describe the command.",
-                target.display()
-            ))
+            task: Task::new(match tool {
+                WriteTool::Any => format!(
+                    "Use your normal shell or file tool to write exactly agentmux-permission-ok to {}. Do not merely describe the command.",
+                    target.display()
+                ),
+                WriteTool::Shell => format!(
+                    "Use your shell tool, not a file-editing tool, to run exactly: printf agentmux-permission-ok > {}. Do not merely describe the command.",
+                    target.display()
+                ),
+            })
             .with_deadline(Duration::from_secs(120)),
             permission_policy: policy,
             assertions: Default::default(),
@@ -175,9 +219,15 @@ impl PermissionFixture {
             provider.as_str(),
             &id[id.len() - 8..]
         ));
-        let target_directory = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("target/provider-permission-audit")
-            .join(id);
+        // Grok writes files through agentmux's filesystem host, which serves only paths inside
+        // the Agent root, so its target must be inside the workspace for the allow case.
+        let target_directory = if provider == ProviderId::Grok {
+            workspace.join("target")
+        } else {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("target/provider-permission-audit")
+                .join(id)
+        };
         std::fs::create_dir_all(&workspace).unwrap();
         std::fs::create_dir_all(&target_directory).unwrap();
         Self {
@@ -192,7 +242,7 @@ impl Drop for PermissionFixture {
         for name in ["denied.txt", "allowed.txt"] {
             let _ = std::fs::remove_file(self.target_directory.join(name));
         }
-        let _ = std::fs::remove_dir(&self.workspace);
         let _ = std::fs::remove_dir(&self.target_directory);
+        let _ = std::fs::remove_dir(&self.workspace);
     }
 }

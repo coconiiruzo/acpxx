@@ -16,9 +16,11 @@ def send(payload):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--no-auto-update", action="store_true")
+    parser.add_argument("--permission-mode")
+    parser.add_argument("--no-leader", action="store_true")
     parser.add_argument("--version", action="store_true")
     parser.add_argument("command", nargs="*")
-    args = parser.parse_args()
+    args = parser.parse_intermixed_args()
     executable_name = os.path.basename(sys.argv[0])
     if args.version or "version" in args.command:
         if "probe_fail" in executable_name:
@@ -202,6 +204,16 @@ def main():
                             },
                             "options": [
                                 {
+                                    "optionId": "allow-always",
+                                    "name": "Always allow",
+                                    "kind": "allow_always",
+                                },
+                                {
+                                    "optionId": "reject-always",
+                                    "name": "Never allow",
+                                    "kind": "reject_always",
+                                },
+                                {
                                     "optionId": "reject-once",
                                     "name": "Reject once",
                                     "kind": "reject_once",
@@ -219,13 +231,44 @@ def main():
                 if permission_response.get("id") != 9001:
                     return 19
                 outcome = permission_response.get("result", {}).get("outcome", {})
-                if mode == "permission" and outcome.get("outcome") != "cancelled":
+                if mode == "permission" and (
+                    outcome.get("outcome") != "selected"
+                    or outcome.get("optionId") != "reject-once"
+                ):
                     return 25
                 if mode == "permission_allow" and (
                     outcome.get("outcome") != "selected"
                     or outcome.get("optionId") != "allow-once"
                 ):
                     return 26
+            if mode == "permission_without_reject":
+                send(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 9003,
+                        "method": "session/request_permission",
+                        "params": {
+                            "sessionId": session_id,
+                            "toolCall": {
+                                "toolCallId": "allow-only-tool",
+                                "title": "Mutation without a reject option",
+                            },
+                            "options": [
+                                {
+                                    "optionId": "allow-once",
+                                    "name": "Allow once",
+                                    "kind": "allow_once",
+                                }
+                            ],
+                        },
+                    }
+                )
+                permission_response = json.loads(sys.stdin.readline())
+                if permission_response.get("id") != 9003:
+                    return 19
+                outcome = permission_response.get("result", {}).get("outcome", {})
+                if outcome.get("outcome") != "cancelled":
+                    return 27
             if mode == "permission_disconnect":
                 send(
                     {
@@ -249,6 +292,24 @@ def main():
                     }
                 )
                 return 29
+            if mode == "terminal_denied":
+                if terminal_capability:
+                    return 30
+                send(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 9200,
+                        "method": "terminal/create",
+                        "params": {
+                            "sessionId": session_id,
+                            "command": "/bin/sh -c 'printf leaked > terminal-denied.txt'",
+                            "cwd": session_cwd,
+                        },
+                    }
+                )
+                refused = json.loads(sys.stdin.readline())
+                if refused.get("id") != 9200 or "error" not in refused:
+                    return 31
             if mode == "terminal":
                 if not terminal_capability:
                     return 20

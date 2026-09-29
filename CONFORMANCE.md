@@ -30,8 +30,9 @@ cargo test --test provider_conformance -- --ignored --test-threads=1
 
 `tests/provider_capability_audit.rs` records ACP v1 capability observations. Missing optional
 features are reported rather than emulated. `tests/provider_permission_audit.rs` performs isolated
-Codex/Claude/Grok mutation allow/deny checks, including a Grok shell-command write. `tests/provider_process_audit.rs` kills a real broker and
-requires every owned provider descendant to disappear through the watchdog path.
+Codex/Claude/Grok mutation allow/deny checks, including a Grok shell-command write.
+`tests/provider_process_audit.rs` kills a real broker and requires every owned provider descendant
+to disappear through the watchdog path.
 
 ```bash
 cargo test --test provider_capability_audit -- --ignored --test-threads=1

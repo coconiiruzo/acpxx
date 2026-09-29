@@ -9,9 +9,19 @@ pub fn grok_driver(executable: Option<PathBuf>) -> ProviderDriver {
     ProviderDriver {
         id: ProviderId::Grok,
         driver_id: DriverId::new("grok-native"),
-        driver_revision: 1,
+        driver_revision: 2,
         command: executable.unwrap_or_else(|| PathBuf::from("grok")),
-        args: vec!["--no-auto-update".into(), "agent".into(), "stdio".into()],
+        // `--permission-mode default` overrides a user or project always-approve default so
+        // mutations reach agentmux as ACP permission requests. `--no-leader` keeps tools inside
+        // the owned process instead of a shared leader started outside agentmux.
+        args: vec![
+            "--no-auto-update".into(),
+            "--permission-mode".into(),
+            "default".into(),
+            "agent".into(),
+            "--no-leader".into(),
+            "stdio".into(),
+        ],
         identity_probe: IdentityProbe::Semver {
             args: vec!["version".into()],
         },
@@ -39,5 +49,27 @@ pub fn grok_driver(executable: Option<PathBuf>) -> ProviderDriver {
         fixed_env: Default::default(),
         preferred_auth_method: Some("cached_token".into()),
         startup_timeout: Duration::from_secs(30),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn driver_forces_ask_permission_mode_and_a_local_agent() {
+        let driver = grok_driver(None);
+        assert_eq!(
+            driver.args,
+            [
+                "--no-auto-update",
+                "--permission-mode",
+                "default",
+                "agent",
+                "--no-leader",
+                "stdio",
+            ]
+        );
+        assert_eq!(driver.driver_revision, 2);
     }
 }

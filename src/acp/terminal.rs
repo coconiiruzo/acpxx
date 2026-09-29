@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
@@ -145,9 +145,10 @@ impl TerminalHost {
             .and_then(|value| usize::try_from(value).ok())
             .unwrap_or(DEFAULT_OUTPUT_LIMIT)
             .min(MAX_OUTPUT_LIMIT);
-        let mut command = Command::new(request.command);
+        let (program, args) = terminal_program(request.command, request.args, &cwd);
+        let mut command = Command::new(program);
         command
-            .args(request.args)
+            .args(args)
             .current_dir(cwd)
             .env_clear()
             .stdin(Stdio::null())
@@ -397,6 +398,20 @@ fn signal_process_group(process_group: u32, signal: libc::c_int) {
 #[cfg(not(unix))]
 fn signal_process_group(_process_group: u32, _signal: libc::c_int) {}
 
+/// Chooses the process to spawn for `terminal/create`.
+///
+/// ACP v1 does not say whether `command` may hold a whole shell line. Grok sends one, such as
+/// `bash -lc '...'`, with no `args`, so only an argument-less command that contains whitespace
+/// and is not an existing file runs through `/bin/sh -c`. Every other request is spawned exactly
+/// as given.
+fn terminal_program(command: String, args: Vec<String>, cwd: &Path) -> (String, Vec<String>) {
+    if args.is_empty() && command.contains(char::is_whitespace) && !cwd.join(&command).is_file() {
+        ("/bin/sh".into(), vec!["-c".into(), command])
+    } else {
+        (command, args)
+    }
+}
+
 fn exit_status(status: std::process::ExitStatus) -> TerminalExitStatus {
     let mut result = TerminalExitStatus::new()
         .exit_code(status.code().and_then(|code| u32::try_from(code).ok()));
@@ -462,6 +477,109 @@ mod tests {
         host.release(ReleaseTerminalRequest::new("session", created.terminal_id))
             .await
             .unwrap();
+    }
+
+    async fn run_to_exit(
+        host: &TerminalHost,
+        request: CreateTerminalRequest,
+    ) -> (Option<u32>, String) {
+        let created = host.create(request).await.unwrap();
+        let waited = host
+            .wait_for_exit(WaitForTerminalExitRequest::new(
+                "session",
+                created.terminal_id.clone(),
+            ))
+            .await
+            .unwrap();
+        let output = host
+            .output(TerminalOutputRequest::new(
+                "session",
+                created.terminal_id.clone(),
+            ))
+            .await
+            .unwrap();
+        host.release(ReleaseTerminalRequest::new("session", created.terminal_id))
+            .await
+            .unwrap();
+        (waited.exit_status.exit_code, output.output)
+    }
+
+    fn scratch_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("agentmux-term-{name}-{}", Uuid::now_v7()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::canonicalize(root).unwrap()
+    }
+
+    #[tokio::test]
+    async fn argument_less_shell_line_runs_through_sh() {
+        let root = scratch_root("shell-line");
+        let host = TerminalHost::new(root.clone(), true).unwrap();
+        let (exit_code, output) = run_to_exit(
+            &host,
+            CreateTerminalRequest::new(
+                "session",
+                "/bin/sh -c 'printf agentmux > shell-line.txt; printf ok'",
+            ),
+        )
+        .await;
+        assert_eq!(exit_code, Some(0));
+        assert_eq!(output, "ok");
+        assert_eq!(
+            std::fs::read_to_string(root.join("shell-line.txt")).unwrap(),
+            "agentmux"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn explicit_args_are_passed_without_a_shell() {
+        let root = scratch_root("args");
+        let host = TerminalHost::new(root.clone(), true).unwrap();
+        let (exit_code, output) = run_to_exit(
+            &host,
+            CreateTerminalRequest::new("session", "/usr/bin/printf")
+                .args(vec!["%s".into(), "$HOME > not-created.txt".into()]),
+        )
+        .await;
+        assert_eq!(exit_code, Some(0));
+        assert_eq!(output, "$HOME > not-created.txt");
+        assert!(!root.join("not-created.txt").exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn executable_path_with_whitespace_runs_directly() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = scratch_root("spaced-path");
+        let tool = root.join("tool dir").join("run tool");
+        std::fs::create_dir_all(tool.parent().unwrap()).unwrap();
+        std::fs::write(&tool, "#!/bin/sh\nprintf direct\n").unwrap();
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let host = TerminalHost::new(root.clone(), true).unwrap();
+        let (exit_code, output) = run_to_exit(
+            &host,
+            CreateTerminalRequest::new("session", tool.to_string_lossy().into_owned()),
+        )
+        .await;
+        assert_eq!(exit_code, Some(0));
+        assert_eq!(output, "direct");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn bare_executable_name_is_spawned_without_a_shell() {
+        let root = scratch_root("bare-name");
+        let host = TerminalHost::new(root.clone(), true).unwrap();
+        let (exit_code, output) =
+            run_to_exit(&host, CreateTerminalRequest::new("session", "pwd")).await;
+        assert_eq!(exit_code, Some(0));
+        assert_eq!(output.trim_end(), root.to_string_lossy());
+        // A shell would spawn and exit 127; a direct spawn of a missing name fails to create.
+        let missing = CreateTerminalRequest::new("session", "agentmux-missing-terminal-command");
+        assert!(host.create(missing).await.is_err());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[tokio::test]

@@ -180,6 +180,24 @@ async fn permission_request_does_not_deadlock_dispatch() {
 }
 
 #[tokio::test]
+async fn deny_policy_cancels_only_when_no_reject_option_is_advertised() {
+    let broker = Broker::new(1);
+    let spawned = broker
+        .spawn(mock_request("permission_without_reject", 0.0))
+        .await
+        .unwrap();
+    let receipt = tokio::time::timeout(
+        Duration::from_secs(2),
+        broker.wait_run(spawned.run, WaitOptions::default()),
+    )
+    .await
+    .expect("permission callback must not deadlock")
+    .unwrap();
+
+    assert_eq!(receipt.state, TerminalRunState::Succeeded);
+}
+
+#[tokio::test]
 async fn explicit_allow_policy_selects_the_advertised_permission() {
     let broker = Broker::new(1);
     let mut request = mock_request("permission_allow", 0.0);
@@ -212,6 +230,29 @@ async fn terminal_host_services_execute_inside_the_agent_root() {
 
     assert_eq!(receipt.state, TerminalRunState::Succeeded);
     assert_eq!(receipt.output.text, "terminal-ok");
+}
+
+#[tokio::test]
+async fn deny_policy_neither_advertises_nor_serves_the_terminal_host() {
+    let broker = Broker::new(1);
+    let spawned = broker
+        .spawn(mock_request("terminal_denied", 0.0))
+        .await
+        .unwrap();
+    let receipt = tokio::time::timeout(
+        Duration::from_secs(2),
+        broker.wait_run(spawned.run, WaitOptions::default()),
+    )
+    .await
+    .expect("terminal callbacks must not deadlock")
+    .unwrap();
+
+    assert_eq!(receipt.state, TerminalRunState::Succeeded);
+    assert!(
+        !std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("terminal-denied.txt")
+            .exists()
+    );
 }
 
 #[tokio::test]

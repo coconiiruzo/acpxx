@@ -59,8 +59,9 @@ async fn grok_real_shell_permission_allow_and_deny() {
     .await;
 }
 
-/// How the audited mutation is requested. Grok runs shell commands in its own process rather
-/// than through the ACP terminal host, so the shell path needs its own audit.
+/// How the audited mutation is requested. The shell audit exercises Grok's own process under
+/// `deny` and the ACP terminal host, including the argument-less `/bin/sh -c` shell-line path,
+/// under `allow-all`, so the shell path needs its own audit.
 #[derive(Clone, Copy)]
 enum WriteTool {
     Any,

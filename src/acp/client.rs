@@ -4,10 +4,11 @@ use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     AuthenticateRequest, ClientCapabilities, ContentBlock, ContentChunk, CreateTerminalRequest,
     FileSystemCapabilities, InitializeRequest, KillTerminalRequest, NewSessionRequest,
-    PermissionOptionKind, PromptRequest, ReadTextFileRequest, ReleaseTerminalRequest,
-    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, SessionNotification, SessionUpdate, StopReason as AcpStopReason,
-    TerminalOutputRequest, WaitForTerminalExitRequest, WriteTextFileRequest,
+    PermissionOption, PermissionOptionKind, PromptRequest, ReadTextFileRequest,
+    ReleaseTerminalRequest, RequestPermissionOutcome, RequestPermissionRequest,
+    RequestPermissionResponse, SelectedPermissionOutcome, SessionNotification, SessionUpdate,
+    StopReason as AcpStopReason, TerminalOutputRequest, WaitForTerminalExitRequest,
+    WriteTextFileRequest,
 };
 use agent_client_protocol::{Agent, Client, ConnectionTo};
 
@@ -191,29 +192,10 @@ pub async fn run_one_shot(
                         title: request.tool_call.fields.title.clone(),
                     }))
                     .await;
-                match permission_policy {
-                    PermissionPolicy::Deny => responder.respond(RequestPermissionResponse::new(
-                        RequestPermissionOutcome::Cancelled,
-                    )),
-                    PermissionPolicy::AllowAll => {
-                        if let Some(option) = request.options.iter().find(|option| {
-                            matches!(
-                                option.kind,
-                                PermissionOptionKind::AllowOnce | PermissionOptionKind::AllowAlways
-                            )
-                        }) {
-                            responder.respond(RequestPermissionResponse::new(
-                                RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
-                                    option.option_id.clone(),
-                                )),
-                            ))
-                        } else {
-                            responder.respond(RequestPermissionResponse::new(
-                                RequestPermissionOutcome::Cancelled,
-                            ))
-                        }
-                    }
-                }
+                responder.respond(RequestPermissionResponse::new(permission_outcome(
+                    permission_policy,
+                    &request.options,
+                )))
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -378,6 +360,32 @@ pub async fn run_one_shot(
     }
 }
 
+/// Answers a permission request with the advertised option matching the policy.
+///
+/// ACP reserves `Cancelled` for prompt turns cancelled while a request is pending, so a denial
+/// selects the provider's `reject_once` option. One-shot options are preferred because `*_always`
+/// options persist grants or refusals in provider-owned state beyond this Run.
+pub(super) fn permission_outcome(
+    policy: PermissionPolicy,
+    options: &[PermissionOption],
+) -> RequestPermissionOutcome {
+    let preferred: &[PermissionOptionKind] = match policy {
+        PermissionPolicy::Deny => &[PermissionOptionKind::RejectOnce],
+        PermissionPolicy::AllowAll => &[
+            PermissionOptionKind::AllowOnce,
+            PermissionOptionKind::AllowAlways,
+        ],
+    };
+    preferred
+        .iter()
+        .find_map(|kind| options.iter().find(|option| option.kind == *kind))
+        .map_or(RequestPermissionOutcome::Cancelled, |option| {
+            RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(
+                option.option_id.clone(),
+            ))
+        })
+}
+
 pub(super) fn map_stop_reason(reason: AcpStopReason) -> StopReason {
     match reason {
         AcpStopReason::EndTurn => StopReason::EndTurn,
@@ -411,5 +419,48 @@ pub(super) fn classify_acp_error(stage: RunStage, message: String) -> RunFailure
         stage,
         retryable: matches!(code, FailureCode::ProviderCrashed),
         message: crate::security::redact_sensitive(&message),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn permission_outcome_selects_one_shot_options_and_cancels_only_as_fallback() {
+        let selected = |id: &str| {
+            RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(id.to_owned()))
+        };
+        let options = [
+            PermissionOption::new("allow-always", "Always", PermissionOptionKind::AllowAlways),
+            PermissionOption::new("reject-always", "Never", PermissionOptionKind::RejectAlways),
+            PermissionOption::new("allow-once", "Allow", PermissionOptionKind::AllowOnce),
+            PermissionOption::new("reject-once", "Reject", PermissionOptionKind::RejectOnce),
+        ];
+        assert_eq!(
+            permission_outcome(PermissionPolicy::Deny, &options),
+            selected("reject-once")
+        );
+        assert_eq!(
+            permission_outcome(PermissionPolicy::AllowAll, &options),
+            selected("allow-once")
+        );
+
+        let persistent_only = [
+            PermissionOption::new("allow-always", "Always", PermissionOptionKind::AllowAlways),
+            PermissionOption::new("reject-always", "Never", PermissionOptionKind::RejectAlways),
+        ];
+        assert_eq!(
+            permission_outcome(PermissionPolicy::Deny, &persistent_only),
+            RequestPermissionOutcome::Cancelled
+        );
+        assert_eq!(
+            permission_outcome(PermissionPolicy::AllowAll, &persistent_only),
+            selected("allow-always")
+        );
+        assert_eq!(
+            permission_outcome(PermissionPolicy::AllowAll, &[]),
+            RequestPermissionOutcome::Cancelled
+        );
     }
 }
